@@ -497,12 +497,21 @@ void PerformanceTab() {
 #ifdef GOW3_UWP
     SpartanUi::SeparatorText("Configuration profiles");
     if (BeginRows("##profiles")) {
-        static const char* const profiles[] = {"Custom", "Balanced", "Lower latency", "Image quality", "30 FPS limit"};
+        std::array<const char*, SpartanXbox::Profiles.size() + 1> profiles{};
+        profiles[0] = "Custom";
+        for (size_t i = 0; i < SpartanXbox::Profiles.size(); ++i)
+            profiles[i + 1] = SpartanXbox::Profiles[i].name;
         Row("Profile");
         int profile = SpartanXbox::MatchProfile(s) + 1;
-        if (SpartanUi::Combo("##value", &profile, profiles, int(std::size(profiles))) &&
+        if (SpartanUi::Combo("##value", &profile, profiles.data(), int(profiles.size())) &&
             SpartanXbox::ApplyProfile(s, profile - 1)) dirty = true;
-        Help("Balanced: 900p, VSync on, 2 queued frames. Lower latency: 720p, VSync off, 1 queued frame. "
+        if (profile > 0 && SpartanXbox::Profiles[profile - 1].tune_streaming) {
+            Help("FPS and stability: 720p, no extra FPS cap, VSync off, 2 queued frames, mip bias +1, "
+                 "sharpening off and game-default filtering. Compact staging, preallocation, texture warmup, "
+                 "disk cache and threaded recording on; known pipelines prepare before gameplay. "
+                 "Restart the app for resolution and renderer changes. Softer textures and possible tearing; "
+                 "no FPS guarantee. Readback settings are preserved.");
+        } else Help("Balanced: 900p, VSync on, 2 queued frames. Lower latency: 720p, VSync off, 1 queued frame. "
              "Image quality: 1080p, VSync on, 2 queued frames. 30 FPS limit: 720p, VSync on, 2 queued frames. "
              "All enable background shader compilation. Resolution applies next start; other profile changes apply live. "
              "Profiles set targets, not guaranteed FPS. Manual changes show Custom.");

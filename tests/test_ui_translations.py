@@ -36,6 +36,9 @@ class UiTranslations(unittest.TestCase):
                    and not s.startswith(('##', 'SPARTAN_')) and s not in invariant
                    and not re.fullmatch(r'[\dKpx ×·:./% -]+(?:\(beta\))?', s) and s not in keys}
         self.assertEqual(missing, set())
+        profiles = (ROOT / 'gpu/shim/spartanport_xbox_profiles.h').read_text()
+        for name in re.findall(r'Profile\{"([^"\n]+)"', profiles):
+            self.assertIn(name, keys)
         options = (ROOT / 'gpu/shim/spartanport_xbox_renderer_options.h').read_text()
         for name in ('MemoryNames', 'StagingNames'):
             block = options.split(name + '{', 1)[1].split('};', 1)[0]

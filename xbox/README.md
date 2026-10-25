@@ -525,7 +525,7 @@ presentation interval. **Performance → Configuration profiles** offers:
 | Image quality | Native 1080p | Up to the game's 60 FPS | On | 2 |
 | 30 FPS limit | 720p | 30 | On | 2 |
 
-All profiles enable background shader compilation. They do not change readback,
+The four original profiles enable background shader compilation. They do not change readback,
 cache, memory or recording preferences. Resolution applies after closing and
 reopening the app; the profile's other changes apply while playing. Changing an
 individual profile control shows **Custom** unless it matches a built-in profile.
@@ -718,3 +718,22 @@ See [texture-streaming.md](../docs/texture-streaming.md) for the texture transla
 pipeline cache, loading-screen preparation, staging profiles and live mip sampling
 preference. The document distinguishes sampling bandwidth from resident memory and
 explains why forced BC7/ASTC conversion and mip eviction are not exposed as switches.
+
+### FPS and stability preset (Series S / 720p)
+
+**Performance → Configuration profiles → FPS and stability** combines 720p, no extra
+FPS limit, VSync off and two queued frames with mip sampling bias +1, RCAS off and
+game-default anisotropy. The existing game/engine limits still apply. It enables
+pipeline disk cache, threaded recording, image-barrier batching, texture prewarm
+and preallocation; uses automatic upload memory and Compact staging (16 MiB startup
+reservation); and finishes known-pipeline warmup during loading. New shaders still
+compile asynchronously. Readback choices are preserved. Original profiles keep
+their existing five-control behavior.
+
+Close settings to save and reopen the app to apply resolution/startup changes.
+Changing any tuned control shows Custom unless it matches another profile; explicit
+private debug overrides still take precedence. Compact staging leaves more memory
+headroom but can need more allocation under bursts. Mip bias affects sampling, not
+resident texture sizes. Expect softer textures, possible tearing and longer loading;
+this is a tuning starting point, not a measured FPS or stability guarantee. Compare
+frame-time spikes and memory peaks on the same scene before/after.

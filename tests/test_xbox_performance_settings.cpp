@@ -79,6 +79,36 @@ int main() {
         assert(X::MatchProfile(s) == profile);
         s.vsync = !s.vsync; assert(X::MatchProfile(s) == -1);
     }
+    // Opt-in FPS/stability tunes streaming too, without changing readback policies.
+    constexpr int fast = 4;
+    assert(X::ApplyProfile(s, fast));
+    assert(s.render_resolution == 2 && s.fps_limit == 0 && s.frames_queued == 2 && !s.vsync);
+    assert(!s.rcas && s.anisotropy == 0 && s.texture_lod_bias == 1 && s.staging_profile == 0);
+    assert(s.texture_preallocate && s.texture_warmup && !s.background_warmup);
+    assert(s.pipeline_cache && s.threaded_recording && s.batch_image_barriers && s.stream_memory == 0);
+    assert(!s.stale_readback && !s.deferred_readback);
+    assert(X::MatchProfile(s) == fast);
+    for (auto* field : {&s.rcas, &s.texture_preallocate, &s.texture_warmup,
+                       &s.background_warmup, &s.pipeline_cache, &s.threaded_recording,
+                       &s.batch_image_barriers, &s.async_shaders}) {
+        *field = !field->load();
+        assert(X::MatchProfile(s) == -1);
+        *field = !field->load();
+        assert(X::MatchProfile(s) == fast);
+    }
+    for (auto* field : {&s.anisotropy, &s.texture_lod_bias, &s.staging_profile, &s.stream_memory}) {
+        const int saved = field->load();
+        *field = saved + 1; assert(X::MatchProfile(s) == -1);
+        *field = saved;
+    }
+    // Preset persists through the actual settings and Xbox startup bridge.
+    S::Save(); ClearOverrides(); BootBridge(); S::Load();
+    assert(X::MatchProfile(s) == fast && S::RendererRestartChanges() == 0);
+    assert(!s.stale_readback && !s.deferred_readback);
+    SetTestEnvironment("SPARTAN_STAGING_PROFILE", "streaming");
+    S::Load(); assert(X::MatchProfile(s) == -1); // Explicit debug override is not mislabeled.
+    ClearOverrides(); BootBridge(); S::Load();
+    assert(X::MatchProfile(s) == fast);
     const bool previous = s.vsync;
     assert(!X::ApplyProfile(s, -1) && !X::ApplyProfile(s, 99) && s.vsync == previous);
     // New renderer fields participate in pending changes; live VSync does not.
