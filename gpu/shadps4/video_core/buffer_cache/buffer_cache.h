@@ -11,6 +11,9 @@
 #include "common/interval_set.h"
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
+#ifdef GOW3_UWP
+#include "video_core/buffer_cache/dense_arena_store.h"
+#endif
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/buffer_cache/sparse_backing.h"
@@ -125,6 +128,9 @@ public:
 
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
+#ifdef GOW3_UWP
+    void RetireDenseArenas();
+#endif
 
 private:
     struct ArenaBinds {
@@ -149,6 +155,7 @@ private:
     std::array<DenseView,DmaViewCount> dense_views{};
     std::unordered_map<u64,u32> dense_slots;
     std::unique_ptr<Buffer> null_buffer;
+    DenseArenaStore dense_arenas;
 #endif
 
     void EnsureResident(const Buffer* arena, u64 first_block, u64 last_block);

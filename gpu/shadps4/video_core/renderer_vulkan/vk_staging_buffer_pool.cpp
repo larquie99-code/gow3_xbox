@@ -151,7 +151,7 @@ StagingBufferRef StagingBufferPool::RequestLarge(u64 size, MemoryType type, bool
     for (LargeBuffer& entry : cache) {
         const u64 entry_size = entry.buffer->SizeBytes();
         if (entry.held || entry_size < size || entry_size > max_size ||
-            !scheduler.IsFree(entry.tick)) {
+            !scheduler.IsFree(std::max(entry.tick, entry.buffer->last_gpu_tick))) {
             continue;
         }
         if (!best || entry_size < best->buffer->SizeBytes()) {
@@ -207,12 +207,50 @@ void StagingBufferPool::TickFrame() {
     PublishStats();
 }
 
+u64 StagingBufferPool::ReclaimUnused(u64 target_bytes) {
+    if (!target_bytes) return 0;
+    // One completion snapshot for the entire pass, not one driver query per busy block.
+    auto* completed = scheduler.GetWorkSemaphore();
+    completed->Refresh();
+    u64 freed = 0;
+    // Dedicated allocations include large transient uploads; held CPU readbacks stay owned.
+    for (auto& cache : large_caches) {
+        std::erase_if(cache, [&](const LargeBuffer& entry) {
+            if (freed >= target_bytes || entry.held || entry.last_used_frame == frame ||
+                !completed->IsFree(std::max(entry.tick, entry.buffer->last_gpu_tick))) return false;
+            freed += entry.buffer->SizeBytes();
+            return true;
+        });
+    }
+    for (auto& ring : rings) {
+        for (size_t i = ring.blocks.size(); i-- > 0 && freed < target_bytes;) {
+            const auto& block = ring.blocks[i];
+            if (block.last_used_frame == frame || !completed->IsFree(std::max(block.buffer->LastTick(), block.buffer->last_gpu_tick))) continue;
+            freed += block.buffer->SizeBytes();
+            ring.blocks.erase(ring.blocks.begin() + i);
+        }
+        // Erasing any block can shift the ring's hint. Buffer objects remain at stable addresses.
+        ring.current = 0;
+    }
+    pressure_reclaimed_bytes.fetch_add(freed, std::memory_order_relaxed);
+    return freed;
+}
+
+u64 StagingBufferPool::AllocatedBytes() const {
+    u64 bytes = 0;
+    for (const auto& ring : rings)
+        for (const auto& block : ring.blocks) bytes += block.buffer->SizeBytes();
+    for (const auto& cache : large_caches)
+        for (const auto& entry : cache) bytes += entry.buffer->SizeBytes();
+    return bytes;
+}
+
 void StagingBufferPool::TrimRing(Ring& ring) {
     auto& blocks = ring.blocks;
     for (size_t i = blocks.size(); i-- > 0;) {
         const Block& block = blocks[i];
         if (blocks.size() <= keep_blocks || frame - block.last_used_frame < ring_idle_frames ||
-            !scheduler.IsFree(block.buffer->LastTick())) {
+            !scheduler.IsFree(std::max(block.buffer->LastTick(), block.buffer->last_gpu_tick))) {
             continue;
         }
         blocks.erase(blocks.begin() + i);
@@ -230,7 +268,7 @@ void StagingBufferPool::TrimRing(Ring& ring) {
 void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
     std::erase_if(cache, [this](const LargeBuffer& entry) {
         return !entry.held && frame - entry.last_used_frame >= large_idle_frames &&
-               scheduler.IsFree(entry.tick);
+               scheduler.IsFree(std::max(entry.tick, entry.buffer->last_gpu_tick));
     });
 }
 

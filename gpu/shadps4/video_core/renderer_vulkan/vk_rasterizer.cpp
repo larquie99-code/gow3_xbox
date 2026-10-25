@@ -1519,6 +1519,10 @@ void Rasterizer::OnSubmit() {
     }
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
+#ifdef GOW3_UWP
+    // Guest submission boundary: all draw preparation and local Buffer references are done.
+    buffer_cache.RetireDenseArenas();
+#endif
     runtime.TickFrame();
     pipeline_cache.CheckpointDriverCache();
     texture_cache.GetTileManager().CheckpointCache();

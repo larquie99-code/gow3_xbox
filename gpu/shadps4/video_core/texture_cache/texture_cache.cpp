@@ -1,3 +1,4 @@
+#include "video_core/texture_cache/upload_range.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -6,6 +7,7 @@
 #include "video_core/amdgpu/liverpool.h"
 
 #include "spartanport_toggles.h"
+#include "spartanport_memory_pressure.h"
 #include "spartanport_settings.h"
 #include "common/assert.h"
 #include "common/debug.h"
@@ -1415,7 +1417,6 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
-    SpartanStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
         const u32 width = std::max(image.info.size.width >> m, 1u);
@@ -1458,12 +1459,22 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
+    auto upload = GetUploadRange(image.info, image_copies);
+#ifdef GOW3_UWP
+    // The diagnostic dump compares complete source/translated mip layouts.
+    static const bool dump_textures = [] {
+        const auto* value = std::getenv("SPARTAN_UWP_TEXTURE_DUMP");
+        return value && *value == '1';
+    }();
+    if (dump_textures) upload = {0, image.info.guest_size};
+#endif
+    SpartanStats::image_upload_bytes.fetch_add(upload.size, std::memory_order_relaxed);
+    SpartanStats::image_upload_saved_bytes.fetch_add(image.info.guest_size - upload.size,
+                                                     std::memory_order_relaxed);
     const auto [in_buffer, in_offset] =
-        buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
+        buffer_cache.ObtainBufferForImage(image.info.guest_address + upload.offset, upload.size);
     const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
-    for (auto& copy : image_copies) {
-        copy.bufferOffset += offset;
-    }
+    RebaseUploadCopies(image_copies, upload, offset);
 
     runtime.UploadImage(&image, buffer, image_copies);
 #ifdef GOW3_UWP
@@ -1668,6 +1679,9 @@ void TextureCache::GarbageCollectImages() {
     // CPU guest pages and GPU heaps share the UWP app limit. DXGI's GPU budget alone
     // does not leave room for scene loads and transient driver allocations.
     total_used_memory = gow3_uwp_app_memory_usage();
+    auto peak = SpartanStats::app_memory_peak_bytes.load(std::memory_order_relaxed);
+    while (total_used_memory > peak && !SpartanStats::app_memory_peak_bytes.compare_exchange_weak(
+               peak, total_used_memory, std::memory_order_relaxed)) {}
     static const u64 test_budget = [] {
         const char* env = std::getenv("SPARTAN_GC_BUDGET_MB");
         const u64 mb = env ? std::strtoull(env, nullptr, 10) : 0;
@@ -1675,6 +1689,10 @@ void TextureCache::GarbageCollectImages() {
     }();
     const u64 app_budget = test_budget ? std::min(test_budget, gow3_uwp_app_memory_limit())
                                       : gow3_uwp_app_memory_limit();
+    // Prefer completed staging allocations over evicting textures that may be needed again.
+    const u64 reclaim_target = SpartanMemory::StagingReclaimTarget(total_used_memory, app_budget);
+    const u64 reclaimed = runtime.GetStagingPool().ReclaimUnused(reclaim_target);
+    if (reclaimed) total_used_memory = gow3_uwp_app_memory_usage();
     trigger_gc_memory = app_budget > 768_MB ? app_budget - 768_MB : app_budget / 2;
     pressure_gc_memory = app_budget > 512_MB ? app_budget - 512_MB : app_budget * 3 / 4;
     critical_gc_memory = app_budget > 256_MB ? app_budget - 256_MB : app_budget * 7 / 8;

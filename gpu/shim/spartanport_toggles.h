@@ -94,6 +94,8 @@ inline std::atomic<std::int64_t> hot_pages{0};
 /// Stall diagnostics (SPARTAN_FRAME_STATS): per-frame deltas printed for frames over 40 ms.
 inline std::atomic<std::uint64_t> images_registered{0};
 inline std::atomic<std::uint64_t> image_upload_bytes{0};
+inline std::atomic<std::uint64_t> image_upload_saved_bytes{0};
+inline std::atomic<std::uint64_t> app_memory_peak_bytes{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread
 inline std::atomic<unsigned long> gpu_thread_id{0}; ///< Windows thread id of the GPU command thread

@@ -16,6 +16,7 @@
 #endif
 #include "common/assert.h"
 #include "spartanport_toggles.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "spartanport_settings.h"
 #include "spartanport_graphics.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
@@ -526,6 +527,14 @@ void VideoOutDriver::Flip(const Request& req) {
                         frames ? double(SpartanStats::scene_draws.exchange(0)) / frames : 0.0);
             presenter->GetRasterizer().GetPipelineCache().ReportCompilerStats();
             Vulkan::WaitDiagnostics::Report();
+            std::printf("Memory optimizations (total MiB): linear uploads avoided %.2f, "
+                        "completed staging released %.2f\n",
+                        SpartanStats::image_upload_saved_bytes.load(std::memory_order_relaxed) / double(1_MB),
+                        Vulkan::StagingBufferPool::pressure_reclaimed_bytes.load(std::memory_order_relaxed) / double(1_MB));
+#ifdef GOW3_UWP
+            std::printf("App memory peak observed at submission: %.1f MiB\n",
+                        SpartanStats::app_memory_peak_bytes.load(std::memory_order_relaxed) / double(1_MB));
+#endif
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -48,6 +49,12 @@ public:
 
     /// Releases idle memory.
     void TickFrame();
+
+    /// Nonblocking pressure relief. Never release held readbacks, this submission's
+    /// reservations, or buffers whose GPU work has not completed. No scheduler waits.
+    u64 ReclaimUnused(u64 target_bytes);
+    [[nodiscard]] u64 AllocatedBytes() const;
+    static inline std::atomic<u64> pressure_reclaimed_bytes{};
 
 private:
     struct Block {

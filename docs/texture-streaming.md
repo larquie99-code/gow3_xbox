@@ -73,3 +73,6 @@ Compare frame-time spikes and app memory. Try Streaming only if memory headroom 
 try sampling +1 separately. Record scene, profile, cache state and run.txt logs including
 `Texture staging` and `Texture translation`. No measured Xbox improvement is claimed
 until the same scene is retested on the console.
+
+For subsequent lifetime, memory-pressure and partial linear-upload improvements,
+see [Texture transfers and memory pressure](memory-pressure-optimization.md).

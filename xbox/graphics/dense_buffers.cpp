@@ -47,8 +47,8 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
             first_page=std::min(first_page,old_first);last_page=std::max(last_page,old_last);
         }
     } while(expanded);
-    auto arena=&arenas.emplace_back(instance,first_page<<arena_page_bits,
-        (last_page-first_page+1)<<arena_page_bits,MemoryType::DeviceLocal);
+    auto arena=dense_arenas.Create(instance,first_page<<arena_page_bits,
+        (last_page-first_page+1)<<arena_page_bits);
     for(auto old:previous) {
         const vk::BufferCopy copy{0,old->cpu_addr-arena->cpu_addr,old->size_bytes};
         runtime.CopyBuffer(old,arena,std::span{&copy,1});
@@ -59,8 +59,15 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
         ASSERT_MSG(entry->second<DmaViewCount,"Logical DMA view capacity reached (%u)",DmaViewCount);
         dense_views[entry->second]={arena,(page-first_page)<<arena_page_bits};
     }
+    for(auto old:previous) dense_arenas.Retire(old);
     std::printf("UWP dense GPU arena: %#llx, %llu MiB, %zu live DMA views\n",arena->cpu_addr,arena->size_bytes>>20,dense_slots.size());
     return arena;
+}
+void BufferCache::RetireDenseArenas() {
+    const u64 retired = dense_arenas.QueueRetired(scheduler);
+    if (retired) std::printf("UWP dense arenas: active %llu MiB, queued retirement %llu MiB (GPU fence pending)\n",
+        static_cast<unsigned long long>(dense_arenas.ActiveBytes() >> 20),
+        static_cast<unsigned long long>(dense_arenas.PendingBytes() >> 20));
 }
 void BufferCache::MarkDmaViewsUsed() {
     for (const auto& view : dense_views) {
