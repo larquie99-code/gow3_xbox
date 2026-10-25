@@ -139,6 +139,16 @@ void TileManager::WarmUp(const std::function<void(u32, u32)>& progress) {
             }
         }
     }
+    // A saved key list may have been learned on a different GPU. Prewarming must not
+    // introduce shader capabilities that the current device did not enable.
+    const auto supported = instance.GetPhysicalDevice().getFeatures2<vk::PhysicalDeviceFeatures2,
+        vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features>();
+    const auto& features11 = supported.get<vk::PhysicalDeviceVulkan11Features>();
+    const auto& features12 = supported.get<vk::PhysicalDeviceVulkan12Features>();
+    std::erase_if(keys, [&](const TilingKey& key) {
+        return (key.num_bits == 8 && (!features12.storageBuffer8BitAccess || !instance.IsShaderInt8Supported())) ||
+               (key.num_bits == 16 && (!features11.storageBuffer16BitAccess || !instance.IsShaderInt16Supported()));
+    });
     u32 done = 0;
     for (const auto& key : keys) {
         ImageInfo info{};
