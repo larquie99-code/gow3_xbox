@@ -4,6 +4,8 @@
 #pragma once
 
 #include <unordered_map>
+#include <chrono>
+#include <functional>
 #include <utility>
 #include <boost/container_hash/hash.hpp>
 
@@ -46,6 +48,12 @@ public:
                          Vulkan::Runtime& runtime, StreamBuffer& stream_buffer);
     ~TileManager();
 
+    // Called on the renderer owner thread before gameplay; progress keeps the loading UI alive.
+    void WarmUp(const std::function<void(u32, u32)>& progress = {});
+    void CheckpointCache(bool force = false);
+    size_t PipelineCount() const { return tiling_pipelines.size(); }
+    size_t LoadedCacheBytes() const { return loaded_cache_bytes; }
+
     void TileImage(Image& in_image, std::span<vk::BufferImageCopy> buffer_copies,
                    const VideoCore::Buffer* out_buffer, u64 out_offset);
 
@@ -66,6 +74,11 @@ private:
     StreamBuffer& stream_buffer;
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pl_layout;
+    vk::UniquePipelineCache pipeline_cache;
+    bool warmed = false;
+    size_t saved_pipelines = 0;
+    size_t loaded_cache_bytes = 0;
+    std::chrono::steady_clock::time_point checkpoint = std::chrono::steady_clock::now();
     std::unordered_map<TilingKey, vk::UniquePipeline, TilingKey::Hash> tiling_pipelines;
 };
 

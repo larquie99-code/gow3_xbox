@@ -89,6 +89,37 @@ int main() {
     assert(S::RendererRestartChanges() == 1 && S::GraphicsNeedRestart());
     s.threaded_recording = s.startup_threaded_recording;
     assert(S::RendererRestartChanges() == 0 && !S::GraphicsNeedRestart());
+    // Texture controls cross disk -> host environment -> renderer startup snapshot.
+    for (int profile = 0; profile < 3; ++profile) {
+        s.staging_profile = profile;
+        s.texture_preallocate = profile != 0;
+        s.texture_warmup = profile != 1;
+        s.background_warmup = profile == 2;
+        s.batch_image_barriers = profile != 0;
+        s.texture_lod_bias = profile;
+        S::Save(); ClearOverrides(); BootBridge(); S::Load();
+        assert(s.staging_profile == profile && s.startup_staging_profile == profile);
+        assert(s.texture_preallocate == (profile != 0) && s.startup_texture_preallocate == (profile != 0));
+        assert(s.texture_warmup == (profile != 1) && s.startup_texture_warmup == (profile != 1));
+        assert(s.background_warmup == (profile == 2) && s.startup_background_warmup == (profile == 2));
+        assert(s.batch_image_barriers == (profile != 0) && s.startup_batch_image_barriers == (profile != 0));
+        assert(s.texture_lod_bias == profile && S::RendererRestartChanges() == 0);
+        s.texture_lod_bias = 0;
+        assert(S::RendererRestartChanges() == 0); // Live sampler choice.
+        s.texture_warmup = !s.texture_warmup;
+        assert(S::RendererRestartChanges() == 1);
+        s.texture_warmup = s.startup_texture_warmup;
+    }
+    ClearOverrides();
+    std::ofstream(path) << "staging_profile=bad\ntexture_preallocate=bad\ntexture_warmup=bad\n"
+                          "background_warmup=bad\nbatch_image_barriers=bad\ntexture_lod_bias=999\n";
+    BootBridge(); S::Load();
+    assert(s.staging_profile == 1 && s.texture_preallocate && s.texture_warmup &&
+           !s.background_warmup && s.batch_image_barriers && s.texture_lod_bias == 2);
+    SetTestEnvironment("SPARTAN_STAGING_PROFILE", "compact");
+    SetTestEnvironment("SPARTAN_TEXTURE_WARMUP", "0");
+    BootBridge(); S::Load();
+    assert(s.startup_staging_profile == 0 && !s.startup_texture_warmup);
     ClearOverrides(); SetTestEnvironment("SPARTAN_CONFIG", "");
     std::remove(path);
     std::puts("Xbox settings: profiles, custom, persistence, host bridge, overrides, live VSync and restart detection passed");

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "spartanport_toggles.h"
+#include "spartanport_xbox_renderer_options.h"
 #include <algorithm>
 #include <bit>
 #include <cstdlib>
@@ -37,7 +38,6 @@ constexpr u64 PREWARM_BLOCKS = 8;
 constexpr u64 DEFAULT_KEEP_MB = 512;
 #endif
 constexpr u64 LARGE_MIN_GRANULARITY = 64_KB;
-constexpr u64 BLOCK_SIZE = 16_MB;
 
 u64 RoundAllocationSize(u64 size) {
     const u64 step = std::max(std::bit_floor(size) / 4, LARGE_MIN_GRANULARITY);
@@ -48,19 +48,48 @@ u64 RoundAllocationSize(u64 size) {
 
 StagingBufferPool::StagingBufferPool(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
-    const char* env = std::getenv("SPARTAN_STAGING_KEEP_MB");
-    keep_blocks = (env ? std::strtoull(env, nullptr, 10) : DEFAULT_KEEP_MB) * 1_MB / BLOCK_SIZE;
-    Ring& ring = rings[u32(MemoryType::HostUncached)];
-    for (u64 i = 0; i < PREWARM_BLOCKS; ++i) {
-        auto& block = ring.blocks.emplace_back(Block{
-            .buffer = std::make_unique<VideoCore::StreamBuffer>(
-                instance, scheduler, MemoryType::HostUncached, BLOCK_SIZE),
-            .last_used_frame = frame,
-        });
-        if (!block.buffer->mapped_data.empty()) {
-            std::memset(block.buffer->mapped_data.data(), 0, block.buffer->mapped_data.size());
+    ring_idle_frames = RING_IDLE_FRAMES;
+    large_idle_frames = LARGE_IDLE_FRAMES;
+    u64 host_blocks = PREWARM_BLOCKS, device_blocks = 0, keep_mb = DEFAULT_KEEP_MB;
+    const char* profile = std::getenv("SPARTAN_STAGING_PROFILE");
+#ifdef GOW3_UWP
+    if (!profile) profile = "balanced";
+#endif
+    if (profile) {
+        const auto policy = SpartanXbox::StagingPolicies[SpartanXbox::ParseStaging(profile)];
+        block_size = u64(policy.block_mb) * 1_MB;
+        keep_mb = policy.keep_mb;
+        host_blocks = policy.host_blocks;
+        device_blocks = policy.device_blocks;
+        ring_idle_frames = large_idle_frames = policy.idle_frames;
+    }
+    // Preserve the debug override, but bound malformed/oversized values before multiplication.
+    if (const char* env = std::getenv("SPARTAN_STAGING_KEEP_MB")) {
+        char* end{};
+        const auto parsed = std::strtol(env, &end, 10);
+        if (end != env && *end == 0) keep_mb = u64(std::clamp(parsed, 0L, 512L));
+    }
+    keep_blocks = keep_mb * 1_MB / block_size;
+    const char* preallocate = std::getenv("SPARTAN_TEXTURE_PREALLOCATE");
+    if (preallocate && *preallocate == '0') host_blocks = device_blocks = 0;
+    for (const auto type : {MemoryType::HostUncached, MemoryType::DeviceLocal}) {
+        Ring& ring = rings[u32(type)];
+        const u64 count = std::min(keep_blocks, type == MemoryType::HostUncached ? host_blocks : device_blocks);
+        for (u64 i = 0; i < count; ++i) {
+            auto& block = ring.blocks.emplace_back(Block{
+                .buffer = std::make_unique<VideoCore::StreamBuffer>(instance, scheduler, type, block_size),
+                .last_used_frame = frame,
+            });
+            if (!block.buffer->mapped_data.empty()) {
+                std::memset(block.buffer->mapped_data.data(), 0, block.buffer->mapped_data.size());
+                block.buffer->Flush(0, block.buffer->SizeBytes());
+            }
         }
     }
+    std::printf("Texture staging: %llu MiB blocks, retain up to %llu MiB per ring, idle %llu frames\n",
+                (unsigned long long)(block_size / 1_MB), (unsigned long long)keep_mb,
+                (unsigned long long)ring_idle_frames);
+
 }
 
 StagingBufferPool::~StagingBufferPool() = default;
@@ -68,7 +97,7 @@ StagingBufferPool::~StagingBufferPool() = default;
 StagingBufferRef StagingBufferPool::Request(u64 size, MemoryType type, u64 alignment,
                                             bool deferred) {
     Ring& ring = rings[u32(type)];
-    if (deferred || size > BLOCK_SIZE) {
+    if (deferred || size > block_size) {
         return RequestLarge(size, type, deferred);
     }
     return RequestFromRing(ring, size, alignment, type);
@@ -92,7 +121,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
     if (!best) {
         best = &ring.blocks.emplace_back(Block{
             .buffer =
-                std::make_unique<VideoCore::StreamBuffer>(instance, scheduler, type, BLOCK_SIZE),
+                std::make_unique<VideoCore::StreamBuffer>(instance, scheduler, type, block_size),
             .last_used_frame = frame,
         });
         ring.current = ring.blocks.size() - 1;
@@ -182,7 +211,7 @@ void StagingBufferPool::TrimRing(Ring& ring) {
     auto& blocks = ring.blocks;
     for (size_t i = blocks.size(); i-- > 0;) {
         const Block& block = blocks[i];
-        if (blocks.size() <= keep_blocks || frame - block.last_used_frame < RING_IDLE_FRAMES ||
+        if (blocks.size() <= keep_blocks || frame - block.last_used_frame < ring_idle_frames ||
             !scheduler.IsFree(block.buffer->LastTick())) {
             continue;
         }
@@ -200,7 +229,7 @@ void StagingBufferPool::TrimRing(Ring& ring) {
 
 void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
     std::erase_if(cache, [this](const LargeBuffer& entry) {
-        return !entry.held && frame - entry.last_used_frame >= LARGE_IDLE_FRAMES &&
+        return !entry.held && frame - entry.last_used_frame >= large_idle_frames &&
                scheduler.IsFree(entry.tick);
     });
 }

@@ -1521,6 +1521,7 @@ void Rasterizer::OnSubmit() {
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
     pipeline_cache.CheckpointDriverCache();
+    texture_cache.GetTileManager().CheckpointCache();
 }
 
 const PreparedStage* Rasterizer::FindPreparedStage(const Shader::Info& stage) const {

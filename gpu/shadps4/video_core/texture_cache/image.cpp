@@ -13,6 +13,7 @@
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_barrier_batch.h"
+#include <cstdlib>
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_format_traits.hpp>
@@ -391,7 +392,11 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
             }
         }
 
-        CompactImageBarriers(barriers, first_barrier);
+        static const bool batch_barriers = [] {
+            const char* value = std::getenv("SPARTAN_BATCH_IMAGE_BARRIERS");
+            return !value || *value != '0';
+        }();
+        if (batch_barriers) CompactImageBarriers(barriers, first_barrier);
         if (!needs_partial_transition) {
             subresource_states.clear();
         }

@@ -6,6 +6,7 @@
 #include "video_core/amdgpu/liverpool.h"
 
 #include "spartanport_toggles.h"
+#include "spartanport_settings.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -1473,6 +1474,10 @@ void TextureCache::RefreshImage(Image& image) {
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
                                      AmdGpu::BorderColorBuffer border_color_base,
                                      const bool is_depth, float extra_lod_bias) {
+    // Preserve depth, point and non-mipmapped reads (including most UI/post-processing).
+    if (!is_depth && sampler.xy_min_filter != AmdGpu::Filter::Point &&
+        sampler.mip_filter != AmdGpu::MipFilter::None)
+        extra_lod_bias += float(std::clamp(SpartanSettings::Get().texture_lod_bias.load(), 0, 2));
     // Compare and plain uses of one S# need separate samplers; so do extra LOD biases.
     const u64 hash = HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
                                  u64(std::bit_cast<u32>(extra_lod_bias)));

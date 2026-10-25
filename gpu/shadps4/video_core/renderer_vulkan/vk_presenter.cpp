@@ -435,6 +435,16 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     }
 #endif
 
+    const auto warm_textures = [&] {
+        SpartanOverlay::SetLoading(true, 0, 0);
+        PresentLoadingFrame();
+        rasterizer->GetTextureCache().GetTileManager().WarmUp([&](u32 done, u32 total) {
+            SpartanOverlay::SetLoading(true, done, total);
+            PresentLoadingFrame();
+        });
+        SpartanOverlay::SetLoading(false, 0, 0);
+    };
+
     const bool binary_cache = EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_BINARIES", true) &&
                               EmulatorSettings.IsPipelineCacheEnabled();
     const bool capture_only = EmulatorSettingsImpl::Flag("SPARTAN_PIPELINE_BINARY_ISOLATED", false) &&
@@ -442,6 +452,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     if (UseOnDemandPipelines(binary_cache, instance.GetPipelineBinaryGlobalKey().keySize != 0,
                             capture_only)) {
         rasterizer->GetPipelineCache().StartOnDemand();
+        warm_textures();
         return;
     }
 
@@ -451,6 +462,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     const char* background_warmup = std::getenv("SPARTAN_BACKGROUND_WARMUP");
     if ((!background_warmup || *background_warmup != '0') &&
         rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
+        warm_textures();
         return;
     }
     SpartanOverlay::SetLoading(true, 0, 0);
@@ -466,6 +478,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         PresentLoadingFrame();
     });
     SpartanOverlay::SetLoading(false, 0, 0);
+    warm_textures();
 
 }
 

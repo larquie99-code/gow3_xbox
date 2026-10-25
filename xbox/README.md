@@ -705,3 +705,10 @@ launcher smoke test; the default requires selecting the action. Existing
 ## Baixar o pacote de testes
 
 Veja [TESTING.md](TESTING.md) para baixar os artefatos do workflow, instalar no Xbox e verificar VSync e os perfis de desempenho.
+
+### Texture streaming controls
+
+See [texture-streaming.md](../docs/texture-streaming.md) for the texture translation
+pipeline cache, loading-screen preparation, staging profiles and live mip sampling
+preference. The document distinguishes sampling bandwidth from resident memory and
+explains why forced BC7/ASTC conversion and mip eviction are not exposed as switches.

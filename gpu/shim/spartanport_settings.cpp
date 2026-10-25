@@ -35,6 +35,15 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         return;
     }
 #ifdef GOW3_UWP
+    if (key == "staging_profile") { v.staging_profile = SpartanXbox::ParseStaging(value); return; }
+    for (const auto& option : SpartanXbox::StartupOptions) {
+        if (key != option.key) continue;
+        const bool enabled = SpartanXbox::Canonical(option, value) == "1";
+        if (key == "texture_preallocate") { v.texture_preallocate = enabled; return; }
+        if (key == "texture_warmup") { v.texture_warmup = enabled; return; }
+        if (key == "background_warmup") { v.background_warmup = enabled; return; }
+        if (key == "batch_image_barriers") { v.batch_image_barriers = enabled; return; }
+    }
     if (key == "stream_memory") { v.stream_memory = SpartanXbox::ParseMemory(value); return; }
     if (key == "pipeline_cache" || key == "threaded_recording") {
         const bool enabled = SpartanXbox::Canonical(SpartanXbox::StartupOptions[0], value) == "1";
@@ -45,6 +54,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
 #endif
     const float f = float(std::atof(value.c_str()));
     const int i = std::atoi(value.c_str());
+    if (key == "texture_lod_bias") { v.texture_lod_bias = std::clamp(i, 0, 2); return; }
     static const char* const overlay_keys[] = {"overlay_fps", "overlay_frametime", "overlay_upscaler",
                                                "overlay_gpu", "overlay_cpu", "overlay_ram", "overlay_vram"};
     for (unsigned item = 0; item < 7; ++item) {
@@ -236,6 +246,12 @@ void Load() {
             if (std::string_view(option.key) == "stream_memory")
                 v.stream_memory = std::string_view(value) == "device" ? 3 :
                     std::string_view(value) == "host" ? 2 : std::string_view(value) == "auto" ? 0 : 1;
+            else if (std::string_view(option.key) == "staging_profile")
+                v.staging_profile = SpartanXbox::ParseStaging(value);
+            else if (std::string_view(option.key) == "texture_preallocate") v.texture_preallocate = value[0] != '0';
+            else if (std::string_view(option.key) == "texture_warmup") v.texture_warmup = value[0] != '0';
+            else if (std::string_view(option.key) == "background_warmup") v.background_warmup = value[0] != '0';
+            else if (std::string_view(option.key) == "batch_image_barriers") v.batch_image_barriers = value[0] != '0';
             else {
                 const bool on = value[0] == '1' || value[0] == 'y' || value[0] == 't';
                 if (std::string_view(option.key) == "pipeline_cache") v.pipeline_cache = on;
@@ -246,6 +262,11 @@ void Load() {
     v.startup_pipeline_cache = v.pipeline_cache;
     v.startup_threaded_recording = v.threaded_recording;
     v.startup_stream_memory = v.stream_memory;
+    v.startup_staging_profile = v.staging_profile;
+    v.startup_texture_preallocate = v.texture_preallocate;
+    v.startup_texture_warmup = v.texture_warmup;
+    v.startup_background_warmup = v.background_warmup;
+    v.startup_batch_image_barriers = v.batch_image_barriers;
 #endif
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
@@ -300,7 +321,12 @@ int RendererRestartChanges() {
     const auto& v = Get();
     return (v.pipeline_cache != v.startup_pipeline_cache) +
            (v.threaded_recording != v.startup_threaded_recording) +
-           (v.stream_memory != v.startup_stream_memory);
+           (v.stream_memory != v.startup_stream_memory) +
+           (v.staging_profile != v.startup_staging_profile) +
+           (v.texture_preallocate != v.startup_texture_preallocate) +
+           (v.texture_warmup != v.startup_texture_warmup) +
+           (v.background_warmup != v.startup_background_warmup) +
+           (v.batch_image_barriers != v.startup_batch_image_barriers);
 #else
     return 0;
 #endif
@@ -382,10 +408,15 @@ void Save() {
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
 #ifdef GOW3_UWP
+    std::fprintf(file, "staging_profile=%s\ntexture_preallocate=%d\ntexture_warmup=%d\nbackground_warmup=%d\nbatch_image_barriers=%d\n",
+                 SpartanXbox::StagingKeys[SpartanXbox::NormalizeStaging(v.staging_profile)],
+                 int(v.texture_preallocate.load()), int(v.texture_warmup.load()),
+                 int(v.background_warmup.load()), int(v.batch_image_barriers.load()));
     std::fprintf(file, "pipeline_cache=%d\nthreaded_recording=%d\nstream_memory=%s\n",
                  int(v.pipeline_cache.load()), int(v.threaded_recording.load()),
                  SpartanXbox::MemoryKeys[SpartanXbox::NormalizeMemory(v.stream_memory)]);
 #endif
+    std::fprintf(file, "texture_lod_bias=%d\n", v.texture_lod_bias.load());
     std::fprintf(file, "launcher_language=%s\n",
                  SpartanLauncher::Codes[SpartanLauncher::Normalize(v.launcher_language.load())]);
     std::fprintf(file, "output_res=%dx%d\n", OutputWidths[v.output_res], OutputHeights[v.output_res]);

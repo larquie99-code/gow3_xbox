@@ -454,6 +454,10 @@ void ImageTab() {
 #endif
     ImGui::SeparatorText(RestartSection("Textures").c_str());
     if (BeginRows("##textures")) {
+        static const char* const texture_detail[] = {"Original", "Prefer smaller mips (+1)", "Prefer smaller mips (+2)"};
+        ChoiceRow("Texture sampling detail", s.texture_lod_bias, texture_detail, nullptr, 3,
+                  "Live mip sampling bias for filtered color textures. May reduce sampling bandwidth and sharpness. "
+                  "Does not reduce allocated texture memory or upload size; depth and non-mipmapped reads are unchanged.");
         static const char* const anisotropy_labels[] = {"Game default", "2x", "4x", "8x", "16x"};
         ChoiceRow("Anisotropic filtering", s.anisotropy, anisotropy_labels, G::Anisotropies.data(),
                   int(G::Anisotropies.size()),
@@ -570,6 +574,20 @@ void PerformanceTab() {
                   int(resolution_labels.size()), "The resolution the game draws at. Higher is sharper and slower.");
 #endif
 #ifdef GOW3_UWP
+        ChoiceRow("Texture staging pool", s.staging_profile, SpartanXbox::StagingNames.data(), nullptr, 3,
+                  "Next start. Compact retains up to 32 MiB per ring; Balanced 64 MiB; Streaming 128 MiB. "
+                  "Larger pools reuse memory across bursts but leave less RAM for the game. Not a hard memory cap.");
+        CheckRow("Preallocate texture staging", s.texture_preallocate,
+                 "Next start. Reserves upload/detiling buffers before gameplay: Compact 16 MiB, Balanced 48 MiB, "
+                 "Streaming 192 MiB, unless graphics-debug overrides retention. Increases baseline memory use.");
+        CheckRow("Prewarm texture translation", s.texture_warmup,
+                 "Next start. Builds common and previously used texture conversion pipelines during the loading screen. "
+                 "Uses the pipeline disk cache when enabled; increases startup time.");
+        CheckRow("Background pipeline warmup", s.background_warmup,
+                 "Next start. Disable to finish cached game pipeline preparation on the loading screen. "
+                 "Enabling starts gameplay sooner but compilation may compete with gameplay.");
+        CheckRow("Batch image barriers", s.batch_image_barriers,
+                 "Next start. Combines adjacent identical transitions while preserving all memory dependencies.");
         CheckRow("Pipeline disk cache", s.pipeline_cache,
                  "Reuses compiled driver data between launches. Applied next start; does not delete existing cache files.");
         CheckRow("Threaded command recording", s.threaded_recording,
@@ -589,6 +607,14 @@ void PerformanceTab() {
 #ifdef GOW3_UWP
     ImGui::SeparatorText("Renderer settings at this start");
     if (BeginRows("##renderer_active")) {
+        InfoRow("Texture staging pool", SpartanXbox::StagingNames[SpartanXbox::NormalizeStaging(s.startup_staging_profile)]);
+        InfoRow("Preallocate texture staging", s.startup_texture_preallocate ? "Enabled" : "Disabled");
+        InfoRow("Prewarm texture translation", s.startup_texture_warmup ? "Enabled" : "Disabled");
+        InfoRow("Background pipeline warmup", s.startup_background_warmup ? "Enabled" : "Disabled");
+        InfoRow("Batch image barriers", s.startup_batch_image_barriers ? "Enabled" : "Disabled");
+        InfoRow("Texture compression", "Native BC formats preserved (including BC7)");
+        InfoRow("Forced BC7 / ASTC", "Unavailable: requires conversion and compatible hardware");
+        InfoRow("Resident mip reduction", "Unavailable: guest aliases require the original mip layout");
         InfoRow("Pipeline disk cache", s.startup_pipeline_cache ? "Enabled" : "Disabled");
         InfoRow("Dedicated recording thread", s.startup_threaded_recording ? "Enabled" : "Disabled");
         InfoRow("Upload memory preference", SpartanXbox::MemoryNames[SpartanXbox::NormalizeMemory(s.startup_stream_memory)]);

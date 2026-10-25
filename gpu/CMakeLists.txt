@@ -340,6 +340,10 @@ endif()
 
 # Requires a Vulkan 1.2 device with BDA (Mesa lavapipe is sufficient); no game assets.
 if(NOT WIN32)
+    add_executable(texture-streaming-test EXCLUDE_FROM_ALL
+        ../tests/test_texture_streaming.cpp ../tests/test_gpu_runtime_stubs.cpp)
+    target_include_directories(texture-streaming-test PRIVATE shim shadps4 third_party/gcn/include)
+    target_link_libraries(texture-streaming-test PRIVATE spartanportgpu)
     add_executable(image-barriers-test EXCLUDE_FROM_ALL
         ../tests/test_image_barriers.cpp ../tests/test_gpu_runtime_stubs.cpp)
     target_include_directories(image-barriers-test PRIVATE shim shadps4 third_party/gcn/include)

@@ -623,7 +623,7 @@ static void loader() {
     // Finish saved-pipeline loading before play; reserve background compilation for new effects.
     // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
     const std::pair<const char*,const char*> performance_defaults[]={
-        {"SPARTAN_BACKGROUND_WARMUP","0"},{"SPARTAN_PARALLEL_WARMUP","1"},
+        {"SPARTAN_PARALLEL_WARMUP","1"},
         {"SPARTAN_PIPELINE_BINARIES","1"}
     };
     for(auto [key,value]:performance_defaults) if(!std::getenv(key)) _putenv_s(key,value);

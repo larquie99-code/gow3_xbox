@@ -233,13 +233,18 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
     scheduler.EndRendering();
     const TransferMark mark{*this, "image upload", *dst};
 
+    if (upload_copies.empty()) return;
+    // All mip copies belong to one ordered transfer. Track their bounding source range once,
+    // including any padding, rather than doing two interval-tree operations for every mip.
+    u64 source_begin = ~u64{0}, source_end = 0;
+    for (const auto& copy : upload_copies) {
+        source_begin = std::min<u64>(source_begin, copy.bufferOffset);
+        source_end = std::max<u64>(source_end, copy.bufferOffset + BufferImageCopySize(copy, dst->info.pixel_format));
+    }
     bool needs_flush =
         Transit(dst, vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits2::eCopy,
                 vk::AccessFlagBits2::eTransferWrite);
-    for (const auto& copy : upload_copies) {
-        const auto copy_size = BufferImageCopySize(copy, dst->info.pixel_format);
-        needs_flush |= IsBufferAccessed(src, copy.bufferOffset, copy_size);
-    }
+    needs_flush |= IsBufferAccessed(src, source_begin, source_end - source_begin);
     if (needs_flush) {
         FlushBarriers();
     }
@@ -249,12 +254,8 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
         cmdbuf.copyBufferToImage(src_handle, image, vk::ImageLayout::eTransferDstOptimal,
                                  regions.size(), regions.data());
     });
-
-    for (const auto& copy : upload_copies) {
-        const auto copy_size = BufferImageCopySize(copy, dst->info.pixel_format);
-        AccessBuffer(src, copy.bufferOffset, copy_size, vk::PipelineStageFlagBits2::eCopy,
-                     vk::AccessFlagBits2::eTransferRead);
-    }
+    AccessBuffer(src, source_begin, source_end - source_begin, vk::PipelineStageFlagBits2::eCopy,
+                 vk::AccessFlagBits2::eTransferRead);
 
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
 }

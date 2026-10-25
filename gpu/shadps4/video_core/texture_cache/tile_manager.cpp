@@ -23,6 +23,9 @@
 #include "video_core/host_shaders/tiling_micro_8_comp.h"
 #include "video_core/host_shaders/tiling_micro_96_comp.h"
 
+#include "video_core/cache_storage.h"
+#include "core/emulator_settings.h"
+#include <cstring>
 #include <magic_enum/magic_enum.hpp>
 #include <vk_mem_alloc.h>
 
@@ -82,9 +85,97 @@ TileManager::TileManager(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     ASSERT_MSG(layout_result == vk::Result::eSuccess, "Failed to create pipeline layout: {}",
                vk::to_string(layout_result));
     pl_layout = std::move(layout);
+    auto [cache_result, cache] = device.createPipelineCacheUnique({});
+    ASSERT_MSG(cache_result == vk::Result::eSuccess, "Texture pipeline cache creation failed");
+    pipeline_cache = std::move(cache);
 }
 
-TileManager::~TileManager() = default;
+TileManager::~TileManager() { CheckpointCache(true); }
+
+void TileManager::WarmUp(const std::function<void(u32, u32)>& progress) {
+    if (warmed) return;
+    warmed = true;
+    auto& db = Storage::DataBase::Instance();
+    const bool persist = EmulatorSettings.IsPipelineCacheEnabled() && db.IsOpened();
+    if (persist) {
+        std::vector<u8> data;
+        db.Load(Storage::BlobType::DriverCache, "texture-translation-v1", data);
+        // Reject truncated, oversized or incompatible driver data before passing it to Vulkan.
+        VkPipelineCacheHeaderVersionOne header{};
+        if (data.size() >= sizeof(header) && data.size() <= 64_MB) {
+            std::memcpy(&header, data.data(), sizeof(header));
+            const auto props = instance.GetPhysicalDevice().getProperties();
+            if (header.headerSize == sizeof(header) && header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+                header.vendorID == props.vendorID && header.deviceID == props.deviceID &&
+                std::memcmp(header.pipelineCacheUUID, props.pipelineCacheUUID.data(), VK_UUID_SIZE) == 0) {
+                auto [result, loaded] = instance.GetDevice().createPipelineCacheUnique(
+                    vk::PipelineCacheCreateInfo{.initialDataSize = data.size(), .pInitialData = data.data()});
+                if (result == vk::Result::eSuccess &&
+                    instance.GetDevice().mergePipelineCaches(*pipeline_cache, *loaded) == vk::Result::eSuccess)
+                    loaded_cache_bytes = data.size();
+            }
+        }
+    }
+    const char* enabled = std::getenv("SPARTAN_TEXTURE_WARMUP");
+    if (enabled && *enabled == '0') return;
+    std::vector<TilingKey> keys;
+    // Common sampled textures, including BC blocks (64/128 bits); other variants are learned.
+    for (const auto mode : {AmdGpu::TileMode::Thin1DThin, AmdGpu::TileMode::Thin2DThin})
+        for (const u32 bits : {8u, 16u, 32u, 64u, 128u})
+            keys.push_back({mode, bits, 1, false});
+    if (persist) {
+        std::vector<u32> data;
+        db.Load(Storage::BlobType::DriverCache, "texture-translation-keys-v1", data);
+        if (data.size() % 4 == 0 && data.size() <= 128 * 4) {
+            for (size_t i = 0; i < data.size(); i += 4) {
+                const auto mode = static_cast<AmdGpu::TileMode>(data[i]);
+                const u32 bits = data[i + 1], samples = data[i + 2];
+                // Only combinations with tiling shaders and valid GCN tile modes are accepted.
+                if (!magic_enum::enum_contains(mode) || data[i] >= 27 || data[i] == 8 ||
+                    (bits != 8 && bits != 16 && bits != 32 && bits != 64 && bits != 96 && bits != 128) ||
+                    (samples != 1 && samples != 2 && samples != 4 && samples != 8) || data[i + 3] > 1)
+                    continue;
+                keys.push_back({mode, bits, samples, data[i + 3] != 0});
+            }
+        }
+    }
+    u32 done = 0;
+    for (const auto& key : keys) {
+        ImageInfo info{};
+        info.tile_mode = key.tile_mode;
+        info.array_mode = AmdGpu::GetArrayMode(key.tile_mode);
+        info.num_bits = key.num_bits;
+        info.num_samples = key.num_samples;
+        GetTilingPipeline(info, key.is_tiler);
+        if (progress) progress(++done, u32(keys.size()));
+    }
+    CheckpointCache(true);
+    std::printf("Texture translation: %zu pipelines ready before gameplay, %zu cache bytes restored\n",
+                tiling_pipelines.size(), loaded_cache_bytes);
+}
+
+void TileManager::CheckpointCache(bool force) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - checkpoint < std::chrono::seconds(30)) return;
+    checkpoint = now;
+    auto& db = Storage::DataBase::Instance();
+    if (!pipeline_cache || saved_pipelines == tiling_pipelines.size() ||
+        !EmulatorSettings.IsPipelineCacheEnabled() || !db.IsOpened()) return;
+    size_t size = 0;
+    const auto device = instance.GetDevice();
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) != vk::Result::eSuccess || size > 64_MB) return;
+    std::vector<u8> data(size);
+    if (device.getPipelineCacheData(*pipeline_cache, &size, data.data()) != vk::Result::eSuccess) return;
+    data.resize(size);
+    std::vector<u32> keys;
+    for (const auto& [key, pipeline] : tiling_pipelines) {
+        if (keys.size() == 128 * 4) break;
+        keys.insert(keys.end(), {u32(key.tile_mode), key.num_bits, key.num_samples, u32(key.is_tiler)});
+    }
+    if (db.Save(Storage::BlobType::DriverCache, "texture-translation-v1", std::move(data)) &&
+        db.Save(Storage::BlobType::DriverCache, "texture-translation-keys-v1", std::move(keys)))
+        saved_pipelines = tiling_pipelines.size();
+}
 
 vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler) {
     const TilingKey key{
@@ -184,7 +275,7 @@ vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler
     };
 
     auto [result, pipeline] =
-        device.createComputePipelineUnique(VK_NULL_HANDLE, compute_pipeline_ci);
+        device.createComputePipelineUnique(*pipeline_cache, compute_pipeline_ci);
     ASSERT_MSG(result == vk::Result::eSuccess, "Detiler pipeline creation failed {}",
                vk::to_string(result));
     const auto handle = *pipeline;

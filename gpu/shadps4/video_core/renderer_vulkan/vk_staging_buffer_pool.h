@@ -82,6 +82,9 @@ private:
     Scheduler& scheduler;
 
     std::array<Ring, NUM_TYPES> rings;
+    u64 block_size = 16_MB;
+    u64 ring_idle_frames = 0;
+    u64 large_idle_frames = 0;
     u64 keep_blocks = 0; ///< spartanport: ring blocks never trimmed
     std::array<std::vector<LargeBuffer>, NUM_TYPES> large_caches;
     u64 frame = 0;

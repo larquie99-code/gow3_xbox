@@ -33,3 +33,18 @@ jogabilidade no console. Se o build falhar, consulte o log do job e, quando gera
 Para executar manualmente, o workflow precisa estar registrado na branch padrão.
 Em **Run workflow**, selecione a branch desejada. A publicação de uma pré-release
 é opcional e fica desativada por padrão.
+
+## Texturas e cenas com muitos efeitos
+
+Em **Performance**, comece com **Texture staging pool: Balanced**, **Preallocate
+texture staging**, **Prewarm texture translation**, **Pipeline disk cache** e
+**Batch image barriers** ligados. Deixe **Background pipeline warmup** desligado
+para concluir a preparação dos pipelines salvos antes de jogar. Feche e reabra o app
+após mudar essas opções.
+
+Compare a mesma cena na primeira passagem, na segunda sem reiniciar e após fechar e
+reabrir o app. Se houver memória disponível, compare o perfil **Streaming**; ele reserva
+mais memória para evitar alocações durante rajadas. Em **Image**, a opção **Texture
+sampling detail: +1** prefere mips menores na amostragem, reduzindo nitidez; ela não
+reduz o tamanho residente das texturas. BC7 nativo é preservado. Conversão forçada
+BC7/ASTC e remoção de mips residentes não estão implementadas.

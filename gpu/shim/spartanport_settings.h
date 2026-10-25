@@ -80,7 +80,13 @@ struct Values {
     std::atomic<int> stream_memory{0};
     bool startup_pipeline_cache = true, startup_threaded_recording = true;
     int startup_stream_memory = 0;
+    std::atomic<int> staging_profile{1};
+    std::atomic<bool> texture_preallocate{true}, texture_warmup{true}, background_warmup{false}, batch_image_barriers{true};
+    int startup_staging_profile = 1;
+    bool startup_texture_preallocate = true, startup_texture_warmup = true;
+    bool startup_background_warmup = false, startup_batch_image_barriers = true;
 #endif
+    std::atomic<int> texture_lod_bias{0}; // Live sampling preference, 0..2; no residency change.
     std::atomic<int> fps_limit{0};
     std::atomic<bool> async_shaders{true};
     std::atomic<bool> fsr1{false};
