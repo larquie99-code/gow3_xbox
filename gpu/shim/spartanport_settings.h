@@ -28,7 +28,7 @@ inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
 struct Values {
-    /// Initial Xbox launcher UI language: English, Brazilian Portuguese, Spanish.
+    /// App interface language (launcher and settings): English, Brazilian Portuguese, Spanish.
     std::atomic<int> launcher_language{0};
     std::atomic<int> upscaler{UpscalerFsr3};
     std::atomic<int> preset{NativeAA};

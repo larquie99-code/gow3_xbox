@@ -683,8 +683,14 @@ Choose **Start game**, **Precompile shaders**, **Choose game folder**, or **Lang
 using D-pad/arrow keys and A/Enter. **Language** offers English, Português (Brasil),
 and Español. The launcher menu updates immediately and remembers the choice in
 `graphics.cfg` (`launcher_language=en`, `pt-BR`, or `es`). B/Esc or **Back** keeps
-the current language. This preference translates the launcher menu and preparation
-progress; native folder-picker messages and the game's own language are independent.
+the current language. The same preference translates all four settings tabs, option
+values, help, loading notices, save-dialog controls and app-owned folder/preparation
+dialogs. It can also be changed live in **Game > Language**; closing settings saves it.
+Widget IDs and renderer values stay independent of translated labels. Long labels
+wrap and help space adapts for 720p. System-owned picker controls follow the console
+language; guest dialogue, save titles and diagnostic details retain their original text.
+`tests/test_ui_translations.py` checks catalog coverage/format arguments;
+`ui-language-test` checks live ImGui rendering, stable IDs and startup preference parsing.
 Preparation displays scanning and compilation progress, then returns to the
 launcher with the prepared count. Unsupported shaders compile during gameplay.
 

@@ -540,3 +540,9 @@ target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan:
 
 add_executable(cheat-hook-test ../tests/test_cheat_hook.cpp)
 target_compile_options(cheat-hook-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+
+add_executable(ui-language-test EXCLUDE_FROM_ALL ../tests/test_ui_language.cpp
+    shim/spartanport_settings.cpp third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
+target_include_directories(ui-language-test PRIVATE shim third_party/imgui)
+target_compile_options(ui-language-test PRIVATE -UNDEBUG)

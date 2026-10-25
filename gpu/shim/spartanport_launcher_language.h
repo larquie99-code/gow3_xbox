@@ -4,7 +4,7 @@
 #include <array>
 #include <string_view>
 
-// Launcher UI only. The guest game's SPARTAN_LANGUAGE setting is independent.
+// App UI only. The guest game's SPARTAN_LANGUAGE setting is independent.
 namespace SpartanLauncher {
 inline constexpr std::array Names{"English", "Português (Brasil)", "Español"};
 inline constexpr std::array Codes{"en", "pt-BR", "es"};
