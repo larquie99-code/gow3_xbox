@@ -338,6 +338,22 @@ if (WIN32 AND NOT GOW3_UWP)
     target_link_options(spartanport-play PRIVATE -municode)
 endif()
 
+# Requires a Vulkan 1.2 device with BDA (Mesa lavapipe is sufficient); no game assets.
+if(NOT WIN32)
+    add_executable(image-barriers-test EXCLUDE_FROM_ALL
+        ../tests/test_image_barriers.cpp ../tests/test_gpu_runtime_stubs.cpp)
+    target_include_directories(image-barriers-test PRIVATE shim shadps4 third_party/gcn/include)
+    target_link_libraries(image-barriers-test PRIVATE spartanportgpu)
+    add_executable(gpu-memory-optimizations-test EXCLUDE_FROM_ALL
+        ../tests/test_gpu_memory_optimizations.cpp ../tests/test_gpu_runtime_stubs.cpp)
+    target_include_directories(gpu-memory-optimizations-test PRIVATE shim shadps4 third_party/gcn/include)
+    target_link_libraries(gpu-memory-optimizations-test PRIVATE spartanportgpu)
+    add_executable(vulkan-suballocation-test EXCLUDE_FROM_ALL
+        ../tests/test_vulkan_suballocation.cpp ../tests/test_gpu_runtime_stubs.cpp)
+    target_include_directories(vulkan-suballocation-test PRIVATE shim shadps4 third_party/gcn/include)
+    target_link_libraries(vulkan-suballocation-test PRIVATE spartanportgpu)
+endif()
+
 # Explicit test targets; neither launches the game nor needs a Vulkan device.
 add_executable(pipeline-binary-cache-test EXCLUDE_FROM_ALL ../tests/test_pipeline_binary_cache.cpp
     ../tests/test_gpu_runtime_stubs.cpp)
@@ -488,6 +504,15 @@ add_executable(graphics-settings-test EXCLUDE_FROM_ALL ../tests/test_graphics_se
     shim/spartanport_settings.cpp)
 target_include_directories(graphics-settings-test PRIVATE shim)
 target_compile_options(graphics-settings-test PRIVATE -UNDEBUG)
+add_executable(xbox-performance-settings-test EXCLUDE_FROM_ALL ../tests/test_xbox_performance_settings.cpp
+    shim/spartanport_settings.cpp)
+target_include_directories(xbox-performance-settings-test PRIVATE shim)
+target_compile_definitions(xbox-performance-settings-test PRIVATE GOW3_UWP)
+target_compile_options(xbox-performance-settings-test PRIVATE -UNDEBUG)
+add_executable(launcher-language-test EXCLUDE_FROM_ALL ../tests/test_launcher_language.cpp
+    shim/spartanport_settings.cpp)
+target_include_directories(launcher-language-test PRIVATE shim)
+target_compile_options(launcher-language-test PRIVATE -UNDEBUG)
 add_executable(actor-hook-test EXCLUDE_FROM_ALL ../tests/test_actor_hook.cpp)
 target_include_directories(actor-hook-test PRIVATE shim)
 target_compile_options(actor-hook-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
@@ -506,7 +531,8 @@ target_compile_options(page-state-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_executable(fsr4-bench EXCLUDE_FROM_ALL tools/fsr4_bench.cpp
     shadps4/video_core/renderer_vulkan/fsr411/fsr411.cpp)
 target_include_directories(fsr4-bench PRIVATE shadps4/video_core/renderer_vulkan/fsr411)
-target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr4-v07-assets Vulkan::Vulkan)
+target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr4-v07-assets
+    Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator)
 
 add_executable(cheat-hook-test ../tests/test_cheat_hook.cpp)
 target_compile_options(cheat-hook-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)

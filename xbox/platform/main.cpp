@@ -28,6 +28,7 @@
 #include <vector>
 #include <utility>
 #include "prepare_game.h"
+#include "../../gpu/shim/spartanport_xbox_renderer_options.h"
 
 extern "C" int gow3_probe_main(int argc,char **argv);
 extern "C" FILE *gow3_uwp_fopen(const char *path,const char *mode);
@@ -616,15 +617,14 @@ static void loader() {
     _putenv_s("SPARTAN_READBACK_LINEAR","1");
     if(!std::getenv("SPARTAN_NO_MSAA")) _putenv_s("SPARTAN_NO_MSAA","1");
     if(!std::getenv("SPARTAN_DRAW_PIPE")) _putenv_s("SPARTAN_DRAW_PIPE","1");
-    if(!std::getenv("SPARTAN_VK_RECORD_THREAD")) _putenv_s("SPARTAN_VK_RECORD_THREAD","1");
     // Guest memory copies on two threads: the Vulkan recording thread is the busiest one with Dozen.
     if(!std::getenv("SPARTAN_COPY_THREADS")) _putenv_s("SPARTAN_COPY_THREADS","2");
     if(!std::getenv("SPARTAN_PREP_WORKERS")) _putenv_s("SPARTAN_PREP_WORKERS","0");
     // Finish saved-pipeline loading before play; reserve background compilation for new effects.
     // Compiler concurrency and retained IR pools are bounded separately in the UWP renderer.
     const std::pair<const char*,const char*> performance_defaults[]={
-        {"SPARTAN_PIPELINE_CACHE","1"},{"SPARTAN_BACKGROUND_WARMUP","0"},{"SPARTAN_PARALLEL_WARMUP","1"},
-        {"SPARTAN_PIPELINE_BINARIES","1"},{"SPARTAN_STREAM_MEMORY","cached"}
+        {"SPARTAN_BACKGROUND_WARMUP","0"},{"SPARTAN_PARALLEL_WARMUP","1"},
+        {"SPARTAN_PIPELINE_BINARIES","1"}
     };
     for(auto [key,value]:performance_defaults) if(!std::getenv(key)) _putenv_s(key,value);
     // The in-game menu's settings, as upstream's launcher reads them before a start: the render resolution chooses
@@ -642,6 +642,9 @@ static void loader() {
         const auto found=menu.find(key);
         return found==menu.end() ? std::string(fallback) : found->second;
     };
+    SpartanXbox::ApplyStartupOptions(setting,
+        [](const char* key) { return std::getenv(key); },
+        [](const char* key,const char* value) { _putenv_s(key,value); });
     struct Passed {const char* variable; const char* key; const char* fallback;};
     const Passed passed[]={{"SPARTAN_ASYNC_SHADERS","async_shaders","1"},
         {"SPARTAN_DEFERRED_READBACK","deferred_readback","1"},{"SPARTAN_STALE_READBACK","stale_readback","1"}};

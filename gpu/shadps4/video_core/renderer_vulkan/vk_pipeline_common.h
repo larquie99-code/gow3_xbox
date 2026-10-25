@@ -72,6 +72,8 @@ public:
     static inline std::atomic<u64> descriptor_repeats[2]{};
 
 protected:
+    void ConfigureDescriptorBindings(std::span<vk::DescriptorSetLayoutBinding> bindings, u32 count);
+    std::vector<u32> dynamic_buffer_bindings;
     [[nodiscard]] std::string GetDebugString() const;
 
     /// spartanport: SPARTAN_WAVE_STATS=1: logs the subgroup width the driver compiled each stage of
@@ -82,6 +84,8 @@ protected:
     Scheduler& scheduler;
     DescriptorHeap& desc_heap;
     const Shader::Profile& profile;
+    // Declared before the executable: destruction releases the executable first.
+    std::vector<vk::UniquePipeline> pipeline_libraries;
     vk::UniquePipeline pipeline;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout desc_layout;

@@ -52,6 +52,7 @@ struct Presenter::Impl {
     HANDLE event=nullptr;
     UINT64 tick=0;
     bool first=true;
+    int last_present_interval=-1;
     void WaitNative() {
         if (fence->GetCompletedValue() >= tick) return;
         Check(fence->SetEventOnCompletion(tick,event),"Native fence event");
@@ -182,7 +183,13 @@ bool Presenter::Present(bool vsync) {
     for(auto& barrier:barriers) std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);
     p.list->ResourceBarrier(2,barriers.data()); Check(p.list->Close(),"Close native copy");
     ID3D12CommandList* lists[]={p.list.Get()}; p.native_queue->ExecuteCommandLists(1,lists);
-    Check(p.swapchain->Present(vsync ? 1 : 0,0),"Present CoreWindow frame");
+    const unsigned sync_interval=vsync ? 1u : 0u;
+    Check(p.swapchain->Present(sync_interval,0),"Present CoreWindow frame");
+    if(p.last_present_interval!=static_cast<int>(sync_interval)) {
+        p.last_present_interval=static_cast<int>(sync_interval);
+        std::printf("CoreWindow VSync %s applied (SyncInterval=%u)\n",
+                    vsync ? "on" : "off",sync_interval);
+    }
     Check(p.native_queue->Signal(p.fence.Get(),++p.tick),"Signal native frame"); p.WaitNative();
     if(p.tick==1) std::puts("CoreWindow first frame presented");
     return true;

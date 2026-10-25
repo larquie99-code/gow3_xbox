@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "video_core/renderer_vulkan/vk_graphics_pipeline_library.h"
 #include <atomic>
 #include <chrono>
 #include <utility>
@@ -477,9 +478,15 @@ GraphicsPipeline::GraphicsPipeline(
 
     const auto binary_directory = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
         Common::ElfInfo::Instance().GameSerial() / "pipeline-binaries";
-    auto [pipeline_result, pipe] =
-        CreateCachedGraphicsPipeline(device, pipeline_cache, pipeline_info, key,
-                                     instance.GetPipelineBinaryGlobalKey(), binary_directory);
+    const auto create_pipeline = [&](const vk::GraphicsPipelineCreateInfo& ci) {
+        // Pipeline binary persistence takes precedence on drivers supporting it.
+        if (instance.IsGraphicsPipelineLibrarySupported() && !instance.GetPipelineBinaryGlobalKey().keySize) {
+            return CreateGraphicsPipelineWithLibraries(device, pipeline_cache, ci, pipeline_libraries);
+        }
+        return CreateCachedGraphicsPipeline(device, pipeline_cache, ci, key,
+            instance.GetPipelineBinaryGlobalKey(), binary_directory);
+    };
+    auto [pipeline_result, pipe] = create_pipeline(pipeline_info);
     ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
                vk::to_string(pipeline_result));
     pipeline = std::move(pipe);
@@ -492,9 +499,7 @@ GraphicsPipeline::GraphicsPipeline(
         square_blending.pAttachments = square_attachments.data();
         auto square_info = pipeline_info;
         square_info.pColorBlendState = &square_blending;
-        auto [square_result, square] =
-            CreateCachedGraphicsPipeline(device, pipeline_cache, square_info, key,
-                                         instance.GetPipelineBinaryGlobalKey(), binary_directory);
+        auto [square_result, square] = create_pipeline(square_info);
         ASSERT_MSG(square_result == vk::Result::eSuccess,
                    "Failed to create the squaring pipeline: {}", vk::to_string(square_result));
         square_pipeline = std::move(square);
@@ -598,7 +603,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             });
         }
     }
-    uses_push_descriptors = binding < instance.MaxPushDescriptors();
+    ConfigureDescriptorBindings(bindings, binding);
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};

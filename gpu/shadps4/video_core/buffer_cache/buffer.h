@@ -125,6 +125,7 @@ struct Buffer {
     size_t size_bytes = 0;
     std::span<u8> mapped_data{};
     bool is_coherent{};
+    mutable u64 last_gpu_tick{}; ///< Includes pending commands, not just submitted work.
     MemoryType mem_type{MemoryType::DeviceLocal};
     UniqueBuffer buffer;
 };

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "spartanport_settings.h"
+#include "spartanport_launcher_language.h"
 #include "spartanport_orbs.h"
+#ifdef GOW3_UWP
+#include "spartanport_xbox_renderer_options.h"
+#endif
 #include "spartanport_graphics.h"
 
 #include <algorithm>
@@ -26,6 +30,19 @@ float Clamp(float v, float lo, float hi) {
 }
 
 void Set(Values& v, const std::string& key, const std::string& value) {
+    if (key == "launcher_language") {
+        v.launcher_language = SpartanLauncher::Parse(value);
+        return;
+    }
+#ifdef GOW3_UWP
+    if (key == "stream_memory") { v.stream_memory = SpartanXbox::ParseMemory(value); return; }
+    if (key == "pipeline_cache" || key == "threaded_recording") {
+        const bool enabled = SpartanXbox::Canonical(SpartanXbox::StartupOptions[0], value) == "1";
+        if (key == "pipeline_cache") v.pipeline_cache = enabled;
+        else v.threaded_recording = enabled;
+        return;
+    }
+#endif
     const float f = float(std::atof(value.c_str()));
     const int i = std::atoi(value.c_str());
     static const char* const overlay_keys[] = {"overlay_fps", "overlay_frametime", "overlay_upscaler",
@@ -212,6 +229,24 @@ void Load() {
             Set(v, key, value);
         }
     }
+#ifdef GOW3_UWP
+    for (const auto& option : SpartanXbox::StartupOptions)
+        if (const char* value = std::getenv(option.variable); value && *value) {
+            // Mirror the backend flag syntax for explicit debug/environment overrides.
+            if (std::string_view(option.key) == "stream_memory")
+                v.stream_memory = std::string_view(value) == "device" ? 3 :
+                    std::string_view(value) == "host" ? 2 : std::string_view(value) == "auto" ? 0 : 1;
+            else {
+                const bool on = value[0] == '1' || value[0] == 'y' || value[0] == 't';
+                if (std::string_view(option.key) == "pipeline_cache") v.pipeline_cache = on;
+                // Scheduler treats any nonzero first character as enabled.
+                else v.threaded_recording = value[0] != '0';
+            }
+        }
+    v.startup_pipeline_cache = v.pipeline_cache;
+    v.startup_threaded_recording = v.threaded_recording;
+    v.startup_stream_memory = v.stream_memory;
+#endif
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
     v.startup_object_motion = v.object_motion;
@@ -260,9 +295,20 @@ int CycleEngineFps() {
     return v.engine_fps;
 }
 
+int RendererRestartChanges() {
+#ifdef GOW3_UWP
+    const auto& v = Get();
+    return (v.pipeline_cache != v.startup_pipeline_cache) +
+           (v.threaded_recording != v.startup_threaded_recording) +
+           (v.stream_memory != v.startup_stream_memory);
+#else
+    return 0;
+#endif
+}
+
 bool GraphicsNeedRestart() {
     const auto& v = Get();
-    return v.render_resolution != v.startup_render_resolution ||
+    return RendererRestartChanges() || v.render_resolution != v.startup_render_resolution ||
            v.deferred_readback != v.startup_deferred_readback ||
            v.stale_readback != v.startup_stale_readback ||
            v.anisotropy != v.startup_anisotropy;
@@ -335,6 +381,13 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
+#ifdef GOW3_UWP
+    std::fprintf(file, "pipeline_cache=%d\nthreaded_recording=%d\nstream_memory=%s\n",
+                 int(v.pipeline_cache.load()), int(v.threaded_recording.load()),
+                 SpartanXbox::MemoryKeys[SpartanXbox::NormalizeMemory(v.stream_memory)]);
+#endif
+    std::fprintf(file, "launcher_language=%s\n",
+                 SpartanLauncher::Codes[SpartanLauncher::Normalize(v.launcher_language.load())]);
     std::fprintf(file, "output_res=%dx%d\n", OutputWidths[v.output_res], OutputHeights[v.output_res]);
     std::fprintf(file, "red_orb_multiplier=%.3f\n", v.red_orb_multiplier.load());
     std::fprintf(file, "damage_dealt=%.3f\n", v.damage_dealt.load());

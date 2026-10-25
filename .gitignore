@@ -31,3 +31,5 @@ patches.json
 !packaging/icon/monogram.png
 /.vscode
 
+# Xbox package branding icons are source assets.
+!xbox/assets/*.png

@@ -4,6 +4,8 @@
 #pragma once
 
 #include <deque>
+#include <map>
+#include <atomic>
 #include <mutex>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -75,9 +77,16 @@ public:
     ~DescriptorHeap();
 
     vk::DescriptorSet Commit(vk::DescriptorSetLayout set_layout);
+    vk::DescriptorSet CommitCached(vk::DescriptorSetLayout layout,
+                                  std::span<const vk::WriteDescriptorSet> writes, u64 recording_tick = 0);
+    static inline std::atomic<u64> cache_hits{}, cache_misses{};
 
 private:
     void CreateDescriptorPool();
+    vk::DescriptorSet CommitLocked(vk::DescriptorSetLayout set_layout);
+    std::map<std::vector<u64>, vk::DescriptorSet> cached_sets;
+    std::vector<u64> key_scratch;
+    u64 cache_tick{};
 
 private:
     vk::Device device;

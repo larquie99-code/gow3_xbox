@@ -24,6 +24,12 @@
 
 #include "ffx_vk_fsr4_v07.h"
 #include "ffx_vk_fsr4_v07_assets.h"
+// This executable owns its VMA implementation; the game uses vk_common.cpp.
+#define VMA_IMPLEMENTATION
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+
 #include "fsr411.h"
 
 namespace {
@@ -53,18 +59,8 @@ struct Gpu {
     VkDevice device{};
     VkQueue queue{};
     uint32_t family = 0;
-    VkPhysicalDeviceMemoryProperties memory{};
+    VmaAllocator allocator{};
 };
-
-uint32_t MemoryType(const Gpu& gpu, uint32_t bits, VkMemoryPropertyFlags flags) {
-    for (uint32_t i = 0; i < gpu.memory.memoryTypeCount; ++i) {
-        if ((bits & (1u << i)) && (gpu.memory.memoryTypes[i].propertyFlags & flags) == flags) {
-            return i;
-        }
-    }
-    std::fprintf(stderr, "no memory type\n");
-    std::exit(1);
-}
 
 Gpu CreateGpu(bool stats) {
     Gpu gpu;
@@ -90,7 +86,6 @@ Gpu CreateGpu(bool stats) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(gpu.physical, &props);
     std::printf("GPU: %s\n", props.deviceName);
-    vkGetPhysicalDeviceMemoryProperties(gpu.physical, &gpu.memory);
 
     uint32_t families = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(gpu.physical, &families, nullptr);
@@ -151,12 +146,21 @@ Gpu CreateGpu(bool stats) {
     dci.ppEnabledExtensionNames = extensions.data();
     CHECK(vkCreateDevice(gpu.physical, &dci, nullptr, &gpu.device));
     vkGetDeviceQueue(gpu.device, gpu.family, 0, &gpu.queue);
+    const VmaVulkanFunctions functions{vkGetInstanceProcAddr, vkGetDeviceProcAddr};
+    VmaAllocatorCreateInfo allocator_ci{};
+    allocator_ci.instance = gpu.instance;
+    allocator_ci.physicalDevice = gpu.physical;
+    allocator_ci.device = gpu.device;
+    allocator_ci.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocator_ci.preferredLargeHeapBlockSize = 128ull * 1024 * 1024;
+    allocator_ci.pVulkanFunctions = &functions;
+    CHECK(vmaCreateAllocator(&allocator_ci, &gpu.allocator));
     return gpu;
 }
 
 struct Buffer {
     VkBuffer buffer{};
-    VkDeviceMemory memory{};
+    VmaAllocation allocation{};
     void* data = nullptr;
 };
 
@@ -165,17 +169,15 @@ Buffer CreateHostBuffer(const Gpu& gpu, VkDeviceSize size, VkBufferUsageFlags us
     VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ci.size = size;
     ci.usage = usage;
-    CHECK(vkCreateBuffer(gpu.device, &ci, nullptr, &b.buffer));
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(gpu.device, b.buffer, &req);
-    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = MemoryType(gpu, req.memoryTypeBits,
-                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    CHECK(vkAllocateMemory(gpu.device, &ai, nullptr, &b.memory));
-    CHECK(vkBindBufferMemory(gpu.device, b.buffer, b.memory, 0));
-    CHECK(vkMapMemory(gpu.device, b.memory, 0, VK_WHOLE_SIZE, 0, &b.data));
+    VmaAllocationCreateInfo allocation_ci{};
+    allocation_ci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                          VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    allocation_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    allocation_ci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VmaAllocationInfo info{};
+    CHECK(vmaCreateBuffer(gpu.allocator, &ci, &allocation_ci, &b.buffer, &b.allocation, &info));
+    b.data = info.pMappedData;
     return b;
 }
 
@@ -194,7 +196,7 @@ uint16_t Half(float f) {
 struct Image {
     VkImage image{};
     VkImageView view{};
-    VkDeviceMemory memory{};
+    VmaAllocation allocation{};
     uint32_t width = 0, height = 0;
 };
 
@@ -212,14 +214,11 @@ Image CreateImage(const Gpu& gpu, VkFormat format, uint32_t w, uint32_t h, VkIma
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
-    CHECK(vkCreateImage(gpu.device, &ci, nullptr, &image.image));
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(gpu.device, image.image, &req);
-    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    ai.allocationSize = req.size;
-    ai.memoryTypeIndex = MemoryType(gpu, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    CHECK(vkAllocateMemory(gpu.device, &ai, nullptr, &image.memory));
-    CHECK(vkBindImageMemory(gpu.device, image.image, image.memory, 0));
+    VmaAllocationCreateInfo allocation_ci{};
+    allocation_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocation_ci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    CHECK(vmaCreateImage(gpu.allocator, &ci, &allocation_ci, &image.image, &image.allocation,
+                         nullptr));
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = image.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -468,6 +467,7 @@ int main(int argc, char** argv) {
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0,
                              nullptr);
         submit();
+        vmaDestroyBuffer(gpu.allocator, staging.buffer, staging.allocation);
     }
 
     const auto resource = [](const Image& image, uint32_t format, uint32_t state) {
@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
     float period_ns = 1.0f;
     if (fsr411) {
         const char* dir411 = std::getenv("SPARTAN_FSR411_DIR");
-        upscaler411 = std::make_unique<Fsr411::Upscaler>(gpu.physical, gpu.device,
+        upscaler411 = std::make_unique<Fsr411::Upscaler>(gpu.physical, gpu.device, gpu.allocator,
                                                          dir411 && dir411[0] ? dir411 : "fsr4_411");
         VkQueryPoolCreateInfo qci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -597,11 +597,17 @@ int main(int argc, char** argv) {
             std::fwrite(readback.data, 1, size_t(bytes), f);
             std::fclose(f);
         }
+        vmaDestroyBuffer(gpu.allocator, readback.buffer, readback.allocation);
     }
     upscaler411.reset();
     if (!fsr411) {
         ffxFsr4V07DestroyContext(&context, nullptr);
         ffxFsr4VkDestroyContext(reinterpret_cast<FfxFsr4VkContext*>(scratch.data()));
     }
+    for (auto* image : {&color, &depth, &motion, &output}) {
+        vkDestroyImageView(gpu.device, image->view, nullptr);
+        vmaDestroyImage(gpu.allocator, image->image, image->allocation);
+    }
+    vmaDestroyAllocator(gpu.allocator);
     return 0;
 }

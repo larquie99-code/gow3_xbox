@@ -33,8 +33,29 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
 Pipeline::~Pipeline() = default;
 
 
-void Pipeline::BindResources(DescriptorWrites& set_writes,
+void Pipeline::ConfigureDescriptorBindings(std::span<vk::DescriptorSetLayoutBinding> bindings,
+                                           u32 count) {
+    uses_push_descriptors = count < instance.MaxPushDescriptors();
+    if (uses_push_descriptors) return; // Push descriptors cannot contain dynamic buffer types.
+    const u32 limit = std::min(instance.MaxDynamicStorageBuffers(), 8u);
+    for (auto& binding : bindings) {
+        if (dynamic_buffer_bindings.size() == limit) break;
+        if (binding.descriptorType == vk::DescriptorType::eStorageBuffer && binding.descriptorCount == 1) {
+            binding.descriptorType = vk::DescriptorType::eStorageBufferDynamic;
+            dynamic_buffer_bindings.push_back(binding.binding);
+        }
+    }
+    std::sort(dynamic_buffer_bindings.begin(), dynamic_buffer_bindings.end());
+}
+
+void Pipeline::BindResources(DescriptorWrites& original_writes,
                              const Shader::PushData& push_data) const {
+    // SubmitExecution advances the semaphore tick before draining deferred commands.
+    // Carry the recording tick explicitly so old commands cannot seed the next tick's cache.
+    const u64 descriptor_tick = scheduler.CurrentTick();
+    DescriptorWrites normalized_writes;
+    if (!dynamic_buffer_bindings.empty()) normalized_writes = original_writes;
+    auto& set_writes = dynamic_buffer_bindings.empty() ? original_writes : normalized_writes;
     const auto bind_point =
         IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
     const auto stage_flags = IsCompute() ? vk::ShaderStageFlagBits::eCompute : AllGraphicsStageBits;
@@ -42,6 +63,26 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
     scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
         cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
     });
+
+    // Normalize the selected storage bindings; shader interfaces are unchanged. Each draw
+    // supplies the low 32 bits as dynamic offsets, while the set can be reused for the ring.
+    boost::container::small_vector<vk::DescriptorBufferInfo, 8> dynamic_infos;
+    boost::container::small_vector<u32, 8> dynamic_offsets;
+    dynamic_infos.reserve(dynamic_buffer_bindings.size());
+    for (const auto binding : dynamic_buffer_bindings) {
+        auto it = std::find_if(set_writes.begin(), set_writes.end(),
+                               [binding](const auto& write) { return write.dstBinding == binding; });
+        ASSERT(it != set_writes.end() && it->descriptorCount == 1 && it->pBufferInfo);
+        auto info = *it->pBufferInfo;
+        // VK_WHOLE_SIZE requires a zero dynamic offset. Null descriptors must also
+        // retain offset zero. Keep their original descriptor base/range.
+        const bool movable = info.buffer && info.range != VK_WHOLE_SIZE;
+        dynamic_offsets.push_back(movable ? u32(info.offset) : 0);
+        if (movable) info.offset &= ~u64{0xFFFFFFFF};
+        dynamic_infos.push_back(info);
+        it->descriptorType = vk::DescriptorType::eStorageBufferDynamic;
+        it->pBufferInfo = &dynamic_infos.back();
+    }
 
     // Bind descriptor set.
     if (set_writes.empty()) {
@@ -145,15 +186,10 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
         // The heap is locked: the toggle can send the next set to this thread while the recording
         // thread still allocates earlier ones.
         scheduler.Record([bind_point, layout, writes, set_layout = *desc_layout, heap = &desc_heap,
-                          device = instance.GetDevice()](vk::CommandBuffer cmdbuf) {
+                          descriptor_tick, offsets = dynamic_offsets](vk::CommandBuffer cmdbuf) {
             const u64 start = __rdtsc();
-            const auto desc_set = heap->Commit(set_layout);
-            auto* patched = const_cast<vk::WriteDescriptorSet*>(writes.data());
-            for (size_t i = 0; i < writes.size(); ++i) {
-                patched[i].dstSet = desc_set;
-            }
-            device.updateDescriptorSets(writes, {});
-            cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, {});
+            const auto desc_set = heap->CommitCached(set_layout, writes, descriptor_tick);
+            cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, offsets);
             descriptor_cycles[1].fetch_add(__rdtsc() - start, std::memory_order_relaxed);
         });
         return;
@@ -161,14 +197,10 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
 
     // Descriptor set updates are device calls: they stay on this thread.
     const u64 start = __rdtsc();
-    const auto desc_set = desc_heap.Commit(*desc_layout);
-    for (auto& set_write : set_writes) {
-        set_write.dstSet = desc_set;
-    }
-    instance.GetDevice().updateDescriptorSets(set_writes, {});
+    const auto desc_set = desc_heap.CommitCached(*desc_layout, set_writes, descriptor_tick);
     descriptor_cycles[0].fetch_add(__rdtsc() - start, std::memory_order_relaxed);
-    scheduler.Record([bind_point, layout, desc_set](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, {});
+    scheduler.Record([bind_point, layout, desc_set, offsets = dynamic_offsets](vk::CommandBuffer cmdbuf) {
+        cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, offsets);
     });
 }
 

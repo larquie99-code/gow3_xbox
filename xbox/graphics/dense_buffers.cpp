@@ -62,6 +62,11 @@ const Buffer* BufferCache::GetDenseArena(u64 first_block,u64 last_block) {
     std::printf("UWP dense GPU arena: %#llx, %llu MiB, %zu live DMA views\n",arena->cpu_addr,arena->size_bytes>>20,dense_slots.size());
     return arena;
 }
+void BufferCache::MarkDmaViewsUsed() {
+    for (const auto& view : dense_views) {
+        if (view.arena) view.arena->last_gpu_tick = scheduler.CurrentTick();
+    }
+}
 void BufferCache::EnsureDenseResident(const Buffer* arena,u64 first_block,u64 last_block) {
     IntervalList gaps;
     resident_ranges.ForEachGap(first_block,last_block+1,[&](u64 first,u64 end){gaps.Add({first,end});});
@@ -69,6 +74,7 @@ void BufferCache::EnsureDenseResident(const Buffer* arena,u64 first_block,u64 la
         Backing backing;
         backing.start=range.start;backing.end=range.end;backing.memory=VK_NULL_HANDLE;
         backing.offset=(range.start<<block_shift)-arena->cpu_addr;
+        backing.block_bytes=block_size;
         resident_ranges.Add(backing);
         const u64 bytes=(range.end-range.start)*sizeof(u64);
         auto staging=staging_pool.Request(bytes,MemoryType::HostUncached);

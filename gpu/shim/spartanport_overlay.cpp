@@ -2,6 +2,8 @@
 #include "spartanport_overlay.h"
 #ifdef GOW3_UWP
 #include "../../xbox/graphics/overlay.h"
+#include "spartanport_xbox_renderer_options.h"
+#include "spartanport_xbox_profiles.h"
 #endif
 
 #include <algorithm>
@@ -82,7 +84,7 @@ bool text_entry_active = false;
 std::string text_entry_prompt, text_entry_text;
 // The game's save list (sceSaveDataDialog): a choice made with the arrows/D-pad.
 std::atomic<bool> choice_active{false};
-std::string choice_title;
+std::string choice_title, choice_help;
 std::vector<std::string> choice_items;
 int choice_index = 0;
 std::atomic<int> choice_result{-1}; // -1 open, -2 cancelled, else the chosen index
@@ -417,14 +419,22 @@ void GameTab() {
 void ImageTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
-#ifndef GOW3_UWP // the Xbox shows the game full screen in step with the TV, without sharpening
     ImGui::SeparatorText("Display");
     if (BeginRows("##display")) {
+#ifndef GOW3_UWP // the Xbox always uses a full-screen CoreWindow
         ChoiceRow("Display mode", s.display_mode, G::DisplayModeNames.data(), nullptr, G::DisplayModeCount,
                   "Windowed, borderless window or exclusive fullscreen.");
+#endif
+#ifdef GOW3_UWP
+        CheckRow("VSync", s.vsync,
+                 "Applies immediately. On: synchronize presentation with the TV. Off: do not request "
+                 "a refresh wait. The Xbox display system and game FPS limits still apply.");
+#else
         CheckRow("VSync", s.vsync, "Waits for the monitor: no tearing, a little more input delay.");
+#endif
         ImGui::EndTable();
     }
+#ifndef GOW3_UWP // the Xbox presents without the desktop sharpening pass
     const int iw = s.image_width, ih = s.image_height, ww = s.window_width, wh = s.window_height;
     const bool downscaling = iw > ww || ih > wh;
     const bool rcas_blocked = s.rcas && !s.rcas_applied;
@@ -470,6 +480,22 @@ void ImageTab() {
 void PerformanceTab() {
     namespace G = SpartanGraphics;
     auto& s = SpartanSettings::Get();
+#ifdef GOW3_UWP
+    ImGui::SeparatorText("Configuration profiles");
+    if (BeginRows("##profiles")) {
+        static const char* const profiles[] = {"Custom", "Balanced", "Lower latency", "Image quality", "30 FPS limit"};
+        Row("Profile");
+        int profile = SpartanXbox::MatchProfile(s) + 1;
+        if (ImGui::Combo("##value", &profile, profiles, int(std::size(profiles))) &&
+            SpartanXbox::ApplyProfile(s, profile - 1)) dirty = true;
+        Help("Balanced: 900p, VSync on, 2 queued frames. Lower latency: 720p, VSync off, 1 queued frame. "
+             "Image quality: 1080p, VSync on, 2 queued frames. 30 FPS limit: 720p, VSync on, 2 queued frames. "
+             "All enable background shader compilation. Resolution applies next start; other profile changes apply live. "
+             "Profiles set targets, not guaranteed FPS. Manual changes show Custom.");
+        ImGui::PopID();
+        ImGui::EndTable();
+    }
+#endif
     ImGui::SeparatorText("Live");
     if (BeginRows("##live")) {
 #ifdef GOW3_UWP
@@ -543,12 +569,32 @@ void PerformanceTab() {
         ChoiceRow("Render resolution", s.render_resolution, resolution_labels.data(), nullptr,
                   int(resolution_labels.size()), "The resolution the game draws at. Higher is sharper and slower.");
 #endif
+#ifdef GOW3_UWP
+        CheckRow("Pipeline disk cache", s.pipeline_cache,
+                 "Reuses compiled driver data between launches. Applied next start; does not delete existing cache files.");
+        CheckRow("Threaded command recording", s.threaded_recording,
+                 "Overlaps CPU preparation and Vulkan recording. Applied next start; this is not parallel scene recording.");
+        ChoiceRow("Upload memory", s.stream_memory, SpartanXbox::MemoryNames.data(), nullptr,
+                  int(SpartanXbox::MemoryNames.size()),
+                  "Applied next start. Automatic prefers compatible unified memory on Xbox. Cached/CPU sequential are "
+                  "host-memory preferences; GPU-visible upload prefers device-local host-visible memory, with fallback. "
+                  "Compare on your console; no memory mode guarantees higher FPS. graphics-debug.txt overrides menu options.");
+#endif
         CheckRow("Game reads GPU data without waiting", s.stale_readback,
                  "Big FPS gain. Switch it off if lighting or objects look wrong.");
         CheckRow("Deferred GPU readbacks", s.deferred_readback,
                  "Fewer waits for the GPU. Switch it off if textures or shadows look wrong.");
         ImGui::EndTable();
     }
+#ifdef GOW3_UWP
+    ImGui::SeparatorText("Renderer settings at this start");
+    if (BeginRows("##renderer_active")) {
+        InfoRow("Pipeline disk cache", s.startup_pipeline_cache ? "Enabled" : "Disabled");
+        InfoRow("Dedicated recording thread", s.startup_threaded_recording ? "Enabled" : "Disabled");
+        InfoRow("Upload memory preference", SpartanXbox::MemoryNames[SpartanXbox::NormalizeMemory(s.startup_stream_memory)]);
+        ImGui::EndTable();
+    }
+#endif
 }
 
 void OverlayTab() {
@@ -632,7 +678,7 @@ void OverlayTab() {
 // Startup options changed since this launch (applied by "Apply and restart").
 int RestartChanges() {
     const auto& s = SpartanSettings::Get();
-    return (s.render_resolution != s.startup_render_resolution) +
+    return SpartanSettings::RendererRestartChanges() + (s.render_resolution != s.startup_render_resolution) +
            (s.deferred_readback != s.startup_deferred_readback) + (s.stale_readback != s.startup_stale_readback) +
            (s.anisotropy != s.startup_anisotropy);
 }
@@ -865,7 +911,7 @@ void ChoiceBox() {
         }
     }
     ImGui::Separator();
-    ImGui::TextDisabled("%s", PadText("Up/Down or D-pad: choose   Enter or Cross (A): OK   Esc or Circle (B): cancel", "Up/Down or D-pad: choose   Enter or A: OK   Esc or B: cancel", "Up/Down or D-pad: choose   Enter or B: OK   Esc or A: cancel"));
+    ImGui::TextDisabled("%s", choice_help.empty() ? PadText("Up/Down or D-pad: choose   Enter or Cross (A): OK   Esc or Circle (B): cancel", "Up/Down or D-pad: choose   Enter or A: OK   Esc or B: cancel", "Up/Down or D-pad: choose   Enter or B: OK   Esc or A: cancel") : choice_help.c_str());
     ImGui::End();
 }
 
@@ -1311,12 +1357,13 @@ bool CapturesInput() {
 }
 
 void BeginChoice(const std::string& title, const std::vector<std::string>& items,
-                 std::vector<SpartanPng::Image> pictures, int focus) {
+                 std::vector<SpartanPng::Image> pictures, int focus, const std::string& help) {
     std::scoped_lock lock{imgui_mutex};
     RetireChoiceTextures();
     choice_pictures = std::move(pictures);
     choice_pictures.resize(items.size());
     choice_title = title;
+    choice_help = help;
     choice_items = items;
     choice_index = focus >= 0 && focus < int(items.size()) ? focus : 0;
     choice_result = -1;

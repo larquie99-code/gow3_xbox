@@ -97,6 +97,8 @@ public:
     bool IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                           bool check_read_access = false);
 
+    bool CanUploadDirect(const VideoCore::Buffer* buffer);
+
     void FlushBarriers();
 
     /// spartanport: runs before this thread changes image state (layouts, pending image

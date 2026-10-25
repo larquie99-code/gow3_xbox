@@ -239,7 +239,7 @@ struct Fsr4Upscaler::Impl {
         if (!fsr411) {
             const char* env = std::getenv("SPARTAN_FSR411_DIR");
             fsr411 = std::make_unique<Fsr411::Upscaler>(instance.GetPhysicalDevice(), instance.GetDevice(),
-                                                        env && env[0] ? env : "fsr4_411");
+                                                        instance.GetAllocator(), env && env[0] ? env : "fsr4_411");
         }
         // Its constant ring holds kFramesInFlight frames: the oldest must be done.
         while (fsr411_ticks.size() >= Fsr411::kFramesInFlight) {

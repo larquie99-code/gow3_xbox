@@ -358,6 +358,10 @@ public:
         return properties.deviceName;
     }
 
+    bool IsGraphicsPipelineLibrarySupported() const { return graphics_pipeline_library; }
+
+    u32 MaxDynamicStorageBuffers() const { return properties.limits.maxDescriptorSetStorageBuffersDynamic; }
+
     /// Returns if the device is an integrated GPU.
     bool IsIntegrated() const {
         return properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
@@ -515,7 +519,7 @@ public:
 private:
     Instance(const Frontend::WindowSystemInfo&, s32, bool, bool);
     /// Creates the logical device opportunistically enabling extensions
-    bool CreateDevice();
+    bool CreateDevice(bool with_surface);
 
     /// Creates the VMA allocator handle
     void CreateAllocator();
@@ -594,6 +598,7 @@ private:
     bool amd_shader_info{};                // spartanport: with it, VK_AMD_shader_info when present
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // spartanport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
+    bool graphics_pipeline_library{};
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};

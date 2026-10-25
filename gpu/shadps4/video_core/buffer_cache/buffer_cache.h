@@ -13,6 +13,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
+#include "video_core/buffer_cache/sparse_backing.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 namespace AmdGpu {
@@ -59,6 +60,9 @@ public:
                          Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool,
                          TextureCache& texture_cache, PageManager& tracker);
     ~BufferCache();
+#ifdef GOW3_UWP
+    void MarkDmaViewsUsed();
+#endif
 
     /// Returns a pointer to GDS device local buffer.
     [[nodiscard]] const Buffer* GetGdsBuffer() const noexcept {
@@ -194,17 +198,9 @@ private:
     std::vector<ArenaBinds> pending_binds;
     Vulkan::Semaphore memory_semaphore;
 
-    struct Backing : public Interval {
-        vk::DeviceMemory memory;
-        u64 offset;
-        constexpr bool CanMergeWith(const Backing& other) const noexcept {
-            return memory == other.memory && offset + (end - start) == other.offset;
-        }
-        constexpr Backing SubRange(u64 a, u64 b) const noexcept {
-            return {{a, b}, memory, offset + (a - start)};
-        }
-    };
+    using Backing = SparseBacking;
     IntervalList<Backing> resident_ranges;
+    std::vector<VmaAllocation> arena_allocations;
 
     u32 arena_memory_type_index{};
     u32 block_size{};

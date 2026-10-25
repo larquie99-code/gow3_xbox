@@ -9,8 +9,7 @@
 #ifdef GOW3_UWP
 #include <SDL3/SDL_surface.h>
 #include "overlay.h"
-// xbox/platform/main.cpp: the launcher's game folder line and its "Choose game folder" list.
-extern "C" void gow3_uwp_game_folder_line(char* out, size_t size);
+// xbox/platform/main.cpp: the launcher's "Choose game folder" list.
 extern "C" void gow3_uwp_find_game_folders(char* out, size_t size);
 extern "C" void gow3_uwp_use_game_folder(const char* dump, char* message, size_t size);
 extern "C" void gow3_uwp_choose_game_folder(char* message, size_t size);
@@ -23,6 +22,7 @@ extern "C" void gow3_uwp_choose_game_folder(char* message, size_t size);
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "spartanport_overlay.h"
 #include "spartanport_settings.h"
+#include "spartanport_launcher_language.h"
 #include "spartanport_graphics.h"
 #include "gow3_precompile.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
@@ -341,12 +341,12 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
 #ifdef GOW3_UWP
     if (const char* launcher=std::getenv("SPARTAN_UWP_LAUNCHER"); launcher && *launcher=='1') {
-        std::string title="God of War III Remastered";
-        char folder_line[600]{};
-        gow3_uwp_game_folder_line(folder_line,sizeof folder_line);
+        std::string title="God of War III";
+        auto& language=SpartanSettings::Get().launcher_language;
         const char* current=std::getenv("SPARTAN_PRECOMPILE_DUMP");
-        const auto choose=[&](const std::string& heading,const std::vector<std::string>& items) {
-            SpartanOverlay::BeginChoice(heading,items,{},0);
+        const auto choose=[&](const std::string& heading,const std::vector<std::string>& items,int focus=0) {
+            SpartanOverlay::BeginChoice(heading,items,{},focus,
+                                       SpartanLauncher::Strings(language).controls);
             int choice=-1;
             while(choice==-1) {
                 // The dedicated UWP window thread already polls controller input.
@@ -359,10 +359,26 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         const char* automatic=std::getenv("SPARTAN_PRECOMPILE_AUTORUN");
         bool compile_once=automatic&&*automatic=='1';
         for (;;) {
+            const auto& text=SpartanLauncher::Strings(language);
             int action=1;
             if (!compile_once) {
-                action=choose(*folder_line ? title+"\n"+folder_line : title,
-                              {"Start game","Precompile shaders","Choose game folder"});
+                const std::string heading=current && *current ?
+                    title+"\n"+text.folder+": "+current : title;
+                action=choose(heading,
+                              {text.start,text.precompile,text.folder,
+                               std::string(text.language)+": "+SpartanLauncher::Names[SpartanLauncher::Normalize(language)]});
+                if(action==3) {
+                    const int picked=choose(text.language,
+                        {SpartanLauncher::Names[0],SpartanLauncher::Names[1],
+                         SpartanLauncher::Names[2],text.back},SpartanLauncher::Normalize(language));
+                    const int selected=SpartanLauncher::SelectedLanguage(language,picked);
+                    if(selected!=language.load()) {
+                        language=selected;
+                        SpartanSettings::Save();
+                        title="God of War III";
+                    }
+                    continue;
+                }
                 if(action==0) break;
                 if(action==2) {
                     // Every dump the app finds by itself, then the picker. A different folder closes the app
@@ -376,13 +392,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
                         if(tab==std::string::npos) continue;
                         paths.push_back(line.substr(0,tab));
                         const bool now=current&&_stricmp(paths.back().c_str(),current)==0;
-                        items.push_back(paths.back()+" ("+line.substr(tab+1)+(now ? ", current" : "")+")");
+                        items.push_back(paths.back()+" ("+SpartanLauncher::Place(language,line.substr(tab+1))+(now ? std::string(", ")+text.current : "")+")");
                     }
-                    items.push_back("Browse USB drive...");
-                    items.push_back("Back");
-                    const int picked=choose("Choose the game folder\n"
-                        "Internal storage: put the dump anywhere under D:\\DevelopmentFiles.\n"
-                        "USB drive: any folder; choose it with Browse USB drive.",items);
+                    items.push_back(text.browse);
+                    items.push_back(text.back);
+                    const int picked=choose(text.folder_help,items);
                     char message[512]{};
                     if(picked>=0&&picked<int(paths.size()))
                         gow3_uwp_use_game_folder(paths[picked].c_str(),message,sizeof message);
@@ -396,23 +410,23 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
             compile_once=false;
             try {
                 const char* dump=std::getenv("SPARTAN_PRECOMPILE_DUMP");
-                if(!dump||!*dump) throw std::runtime_error("Game folder is not configured");
+                if(!dump||!*dump) throw std::runtime_error(text.no_folder);
                 auto last=std::chrono::steady_clock::time_point{};
                 const auto result=Gow3Precompile::Prepare(dump,Gow3Precompile::CacheDirectory(),
                     rasterizer->GetPipelineCache().GetProfile(),[&](const auto& progress) {
                         const auto now=std::chrono::steady_clock::now();
                         if(now-last<std::chrono::milliseconds(100)&&progress.done!=progress.total) return;
                         last=now;
-                        SpartanOverlay::SetLoadingLabel(progress.scanning ? "Scanning game files..." :
-                            progress.vertex ? "Precompiling vertex shaders..." : "Precompiling fragment shaders...");
+                        SpartanOverlay::SetLoadingLabel(progress.scanning ? text.scanning :
+                            progress.vertex ? text.vertex : text.fragment);
                         SpartanOverlay::SetLoading(true,progress.done,progress.total);
                         PresentLoadingFrame();
                     });
-                title=fmt::format("{} shader entries prepared. Others compile during gameplay.{}",
-                    result.prepared_entries,result.failed ? " Some variants could not be prepared." : "");
+                title=fmt::format(fmt::runtime(text.prepared),
+                    result.prepared_entries,result.failed ? text.failed_variants : "");
                 std::printf("Launcher precompile: %u entries, %u variants ready\n",result.prepared_entries,result.compiled+result.already_cached);
             } catch(const std::exception& error) {
-                title=std::string("Precompilation could not finish: ")+error.what();
+                title=std::string(text.failed)+error.what();
                 std::printf("Launcher precompile failed: %s\n",error.what());
             }
             SpartanOverlay::SetLoading(false,0,0);

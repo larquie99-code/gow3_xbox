@@ -27,6 +27,8 @@
 
 namespace VideoCore {
 
+std::atomic<u64> direct_upload_bytes{};
+
 static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
 
@@ -106,7 +108,14 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     runtime.FillBuffer(bda_pagetable_buffer.get(), 0u, bda_pagetable_size, 0u);
 }
 
-BufferCache::~BufferCache() = default;
+BufferCache::~BufferCache() {
+    // As with the other cache resources, the caller must drain GPU work before teardown.
+    // Destroy sparse buffers before returning their backing suballocations to VMA.
+    arenas.clear();
+    for (const auto allocation : arena_allocations) {
+        vmaFreeMemory(instance.GetAllocator(), allocation);
+    }
+}
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
     memory_tracker->InvalidateRegion(device_addr, size, [this, device_addr, size, assume_locks] {
@@ -490,17 +499,32 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     }
     SpartanStats::Timer timer{SpartanStats::t_resident};
 
-    const vk::MemoryAllocateInfo alloc_info = {
-        .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = arena_memory_type_index,
+    const VkMemoryRequirements requirements = {
+        .size = VkDeviceSize{resident_blocks} << block_shift,
+        .alignment = block_size,
+        .memoryTypeBits = 1u << arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    // Sparse binds need the actual block handle AND the suballocation's byte offset.
+    // Use UNKNOWN for raw memory allocations (AUTO requires a buffer/image create info).
+    const VmaAllocationCreateInfo alloc_info = {
+        .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
+        .usage = VMA_MEMORY_USAGE_UNKNOWN,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    };
+    VmaAllocation allocation{};
+    VmaAllocationInfo allocation_info{};
+    const auto result = vmaAllocateMemory(instance.GetAllocator(), &requirements, &alloc_info,
+                                          &allocation, &allocation_info);
+    ASSERT_MSG(result == VK_SUCCESS, "Failed allocating sparse backing with error {}",
+               vk::to_string(vk::Result{result}));
+    arena_allocations.push_back(allocation);
+    const vk::DeviceMemory device_memory{allocation_info.deviceMemory};
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
         staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
 
-    u64 memory_offset{};
+    u64 memory_offset{allocation_info.offset};
     ArenaBinds* binds = BindsForArena(arena);
     auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
     u64 offset = staging.offset;
@@ -510,6 +534,7 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         backing.end = range.end;
         backing.memory = device_memory;
         backing.offset = memory_offset;
+        backing.block_bytes = block_size;
         resident_ranges.Add(backing);
 
         LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
@@ -566,6 +591,17 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
         texture_cache.ResolveReadbacks(copy.dstOffset, copy.size, true, ReadbackSource::BufferUpload);
     }
     SpartanStats::buffer_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);
+    if (runtime.CanUploadDirect(arena)) {
+        for (const auto& copy : copies) {
+            const u64 offset = copy.dstOffset - arena->cpu_addr;
+            memory->CopySparseMemory(copy.dstOffset, arena->mapped_data.data() + offset, copy.size);
+            const_cast<Buffer*>(arena)->Flush(offset, copy.size);
+            runtime.AccessBuffer(arena, offset, copy.size, vk::PipelineStageFlagBits2::eHost,
+                                 vk::AccessFlagBits2::eHostWrite);
+        }
+        direct_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);
+        return nullptr; // No staging allocation or GPU transfer.
+    }
     const auto staging = staging_pool.Request(total_size_bytes, MemoryType::HostUncached);
     // spartanport: the guest memory is copied into staging on the copy threads, started now in
     // groups of about 1 MiB; submission and guest-visible fences wait for them

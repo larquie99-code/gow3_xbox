@@ -203,7 +203,7 @@ struct Upscaler::Impl {
     VkDevice device;
     std::string dir;
     std::string error;
-    VkPhysicalDeviceMemoryProperties memory{};
+    VmaAllocator allocator;
     VkDeviceSize ubo_align = 256;
     PFN_vkCmdPushDescriptorSetKHR push_descriptors = nullptr;
 
@@ -225,12 +225,12 @@ struct Upscaler::Impl {
     struct Img {
         VkImage image = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
     };
     Img recurrent, history, reprojected, mlsr_output, exposure, exposure_identity, spd_atomic, spd_mip5;
     struct Buf {
         VkBuffer buffer = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
         VkDeviceSize size = 0;
         void* mapped = nullptr;
     };
@@ -246,9 +246,8 @@ struct Upscaler::Impl {
     std::array<double, kPassCount> profile_ms{};
     uint64_t profile_frames = 0;
 
-    Impl(VkPhysicalDevice p, VkDevice d, std::string dir_)
-        : physical{p}, device{d}, dir{std::move(dir_)} {
-        vkGetPhysicalDeviceMemoryProperties(physical, &memory);
+    Impl(VkPhysicalDevice p, VkDevice d, VmaAllocator allocator_, std::string dir_)
+        : physical{p}, device{d}, dir{std::move(dir_)}, allocator{allocator_} {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physical, &props);
         ubo_align = std::max<VkDeviceSize>(256, props.limits.minUniformBufferOffsetAlignment);
@@ -300,52 +299,30 @@ struct Upscaler::Impl {
         if (profile_pool) vkDestroyQueryPool(device, profile_pool, nullptr);
     }
 
-    uint32_t MemoryType(uint32_t bits, VkMemoryPropertyFlags flags) const {
-        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-            if ((bits & (1u << i)) && (memory.memoryTypes[i].propertyFlags & flags) == flags) {
-                return i;
-            }
-        }
-        return UINT32_MAX;
-    }
-
-    bool Allocate(VkMemoryRequirements req, VkMemoryPropertyFlags flags, VkDeviceMemory& out) {
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        ai.allocationSize = req.size;
-        ai.memoryTypeIndex = MemoryType(req.memoryTypeBits, flags);
-        if (ai.memoryTypeIndex == UINT32_MAX) {
-            error = "no memory type";
-            return false;
-        }
-        if (vkAllocateMemory(device, &ai, nullptr, &out) != VK_SUCCESS) {
-            error = "out of memory";
-            return false;
-        }
-        return true;
-    }
-
     bool MakeBuffer(Buf& b, VkDeviceSize size, VkBufferUsageFlags usage, bool host) {
         VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         ci.size = size;
         ci.usage = usage;
-        if (vkCreateBuffer(device, &ci, nullptr, &b.buffer) != VK_SUCCESS) {
-            error = "buffer creation failed";
-            return false;
+        VmaAllocationCreateInfo allocation_ci{};
+        allocation_ci.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        allocation_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        allocation_ci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        if (host) {
+            allocation_ci.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                                   VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            allocation_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+            // The constant/staging writes rely on coherent memory, as before.
+            allocation_ci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         }
-        VkMemoryRequirements req;
-        vkGetBufferMemoryRequirements(device, b.buffer, &req);
-        const VkMemoryPropertyFlags flags =
-            host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                 : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-        if (!Allocate(req, flags, b.memory) ||
-            vkBindBufferMemory(device, b.buffer, b.memory, 0) != VK_SUCCESS) {
+        VmaAllocationInfo allocation_info{};
+        if (vmaCreateBuffer(allocator, &ci, &allocation_ci, &b.buffer, &b.allocation,
+                            &allocation_info) != VK_SUCCESS) {
+            error = "buffer allocation failed";
             return false;
         }
         b.size = size;
-        if (host && vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped) != VK_SUCCESS) {
-            error = "map failed";
-            return false;
-        }
+        b.mapped = allocation_info.pMappedData;
         return true;
     }
 
@@ -360,14 +337,14 @@ struct Upscaler::Impl {
         ci.tiling = VK_IMAGE_TILING_OPTIMAL;
         ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (vkCreateImage(device, &ci, nullptr, &img.image) != VK_SUCCESS) {
-            error = "image creation failed";
-            return false;
-        }
-        VkMemoryRequirements req;
-        vkGetImageMemoryRequirements(device, img.image, &req);
-        if (!Allocate(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, img.memory) ||
-            vkBindImageMemory(device, img.image, img.memory, 0) != VK_SUCCESS) {
+        const VmaAllocationCreateInfo allocation_ci = {
+            .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        };
+        if (vmaCreateImage(allocator, &ci, &allocation_ci, &img.image, &img.allocation,
+                           nullptr) != VK_SUCCESS) {
+            error = "image allocation failed";
             return false;
         }
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -384,14 +361,12 @@ struct Upscaler::Impl {
 
     void FreeImage(Img& img) {
         if (img.view) vkDestroyImageView(device, img.view, nullptr);
-        if (img.image) vkDestroyImage(device, img.image, nullptr);
-        if (img.memory) vkFreeMemory(device, img.memory, nullptr);
+        if (img.image) vmaDestroyImage(allocator, img.image, img.allocation);
         img = {};
     }
 
     void FreeBuffer(Buf& b) {
-        if (b.buffer) vkDestroyBuffer(device, b.buffer, nullptr);
-        if (b.memory) vkFreeMemory(device, b.memory, nullptr);
+        if (b.buffer) vmaDestroyBuffer(allocator, b.buffer, b.allocation);
         b = {};
     }
 
@@ -765,8 +740,8 @@ struct Upscaler::Impl {
     }
 };
 
-Upscaler::Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir)
-    : impl{std::make_unique<Impl>(physical, device, std::move(dir))} {}
+Upscaler::Upscaler(VkPhysicalDevice physical, VkDevice device, VmaAllocator allocator, std::string dir)
+    : impl{std::make_unique<Impl>(physical, device, allocator, std::move(dir))} {}
 
 Upscaler::~Upscaler() = default;
 

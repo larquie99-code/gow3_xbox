@@ -28,6 +28,8 @@ inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
 struct Values {
+    /// Initial Xbox launcher UI language: English, Brazilian Portuguese, Spanish.
+    std::atomic<int> launcher_language{0};
     std::atomic<int> upscaler{UpscalerFsr3};
     std::atomic<int> preset{NativeAA};
     std::atomic<bool> sharpen{true};
@@ -72,6 +74,13 @@ struct Values {
     // Graphics (spartanport_graphics.h). Live: applied on the next frame.
     std::atomic<int> display_mode{0};
     std::atomic<bool> vsync{true};
+#ifdef GOW3_UWP
+    // Startup-only renderer options. Snapshots describe this running session.
+    std::atomic<bool> pipeline_cache{true}, threaded_recording{true};
+    std::atomic<int> stream_memory{0};
+    bool startup_pipeline_cache = true, startup_threaded_recording = true;
+    int startup_stream_memory = 0;
+#endif
     std::atomic<int> fps_limit{0};
     std::atomic<bool> async_shaders{true};
     std::atomic<bool> fsr1{false};
@@ -158,6 +167,7 @@ int RenderPreset();
 bool ResolutionNeedsRestart();
 /// A startup graphics option differs from the one this launch started with.
 bool GraphicsNeedRestart();
+int RendererRestartChanges();
 /// The engine rate in effect: engine_fps, up to what this launch's patch allows.
 int EngineFpsNow();
 /// Present thread, every vblank: writes EngineFpsNow() into the game once the game has set its

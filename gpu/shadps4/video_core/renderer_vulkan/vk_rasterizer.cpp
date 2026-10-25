@@ -1520,6 +1520,7 @@ void Rasterizer::OnSubmit() {
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
+    pipeline_cache.CheckpointDriverCache();
 }
 
 const PreparedStage* Rasterizer::FindPreparedStage(const Shader::Info& stage) const {
@@ -2203,6 +2204,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             } else if (desc.buffer_type == Shader::BufferType::DmaBuffers) {
                 auto views=buffer_cache.GetDmaViews();
                 buffer_infos.insert(buffer_infos.end(),views.begin(),views.end());
+                buffer_cache.MarkDmaViewsUsed();
 #endif
             } else if (desc.buffer_type == Shader::BufferType::BdaPagetable) {
                 const auto* bda_buffer = buffer_cache.GetBdaPageTableBuffer();

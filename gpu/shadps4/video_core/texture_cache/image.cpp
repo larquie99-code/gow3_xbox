@@ -3,6 +3,8 @@
 
 #include "spartanport_toggles.h"
 #include <ranges>
+#include <map>
+#include <mutex>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -10,8 +12,10 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
+#include "video_core/texture_cache/image_barrier_batch.h"
 
 #include <vk_mem_alloc.h>
+#include <vulkan/vulkan_format_traits.hpp>
 #ifdef GOW3_UWP
 extern "C" uint64_t gow3_uwp_app_memory_usage();
 extern "C" uint64_t gow3_uwp_app_memory_limit();
@@ -19,6 +23,44 @@ extern "C" uint64_t runtime_memory_page_out(uint64_t bytes);
 #endif
 
 namespace VideoCore {
+namespace {
+struct TextureMemoryStat { u64 live{}, peak{}, allocations{}; };
+std::mutex texture_memory_mutex;
+std::map<vk::Format, TextureMemoryStat> texture_memory_stats;
+bool TextureMemoryDiagnostics() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SPARTAN_GPU_MEMORY_STATS");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+void NoteTextureMemory(vk::Format format, u64 bytes, bool allocated) {
+    if (!TextureMemoryDiagnostics()) return;
+    std::scoped_lock lock{texture_memory_mutex};
+    auto& stat = texture_memory_stats[format];
+    if (allocated) {
+        stat.live += bytes;
+        stat.peak = std::max(stat.peak, stat.live);
+        ++stat.allocations;
+    } else {
+        stat.live -= bytes;
+    }
+}
+} // namespace
+
+void ReportTextureMemoryStats() {
+    if (!TextureMemoryDiagnostics()) return;
+    std::scoped_lock lock{texture_memory_mutex};
+    for (const auto& [format, stat] : texture_memory_stats) {
+        const auto block = vk::blockExtent(format);
+        std::printf("GPU textures %s (%s): live %llu MiB, peak %llu MiB, %llu creations\n",
+            vk::to_string(format).c_str(), block[0] > 1 || block[1] > 1 ? "compressed" : "uncompressed",
+            static_cast<unsigned long long>(stat.live >> 20),
+            static_cast<unsigned long long>(stat.peak >> 20),
+            static_cast<unsigned long long>(stat.allocations));
+    }
+}
+
 
 using namespace Vulkan;
 
@@ -91,13 +133,16 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 }
 
 UniqueImage::~UniqueImage() {
-    if (image) {
-        vmaDestroyImage(allocator, image, allocation);
-    }
+    Destroy();
 }
 
 void UniqueImage::Destroy() {
     if (image) {
+        if (TextureMemoryDiagnostics()) {
+            VmaAllocationInfo info{};
+            vmaGetAllocationInfo(allocator, allocation, &info);
+            NoteTextureMemory(image_ci.format, info.size, false);
+        }
         vmaDestroyImage(allocator, image, allocation);
         image = vk::Image{};
         allocation = {};
@@ -153,6 +198,7 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
+    NoteTextureMemory(image_ci.format, alloc_info.size, true);
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
@@ -308,10 +354,9 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
                                            subres_range->base.layer + subres_range->extent.layers)
                 : std::views::iota(0u, info.resources.layers);
 
+        const size_t first_barrier = barriers.size();
         for (u32 mip : mips) {
             for (u32 layer : layers) {
-                // NOTE: these loops may produce a lot of small barriers.
-                // If this becomes a problem, we can optimize it by merging adjacent barriers.
                 const auto subres_idx = mip * info.resources.layers + layer;
                 ASSERT(subres_idx < subresource_states.size());
                 auto& state = subresource_states[subres_idx];
@@ -346,6 +391,7 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
             }
         }
 
+        CompactImageBarriers(barriers, first_barrier);
         if (!needs_partial_transition) {
             subresource_states.clear();
         }

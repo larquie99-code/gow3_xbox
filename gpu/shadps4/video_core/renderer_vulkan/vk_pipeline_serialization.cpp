@@ -933,6 +933,7 @@ static void ReportPipelineBuildTime() {
 }
 
 void PipelineCache::LoadDriverCache() {
+    if (!EmulatorSettings.IsPipelineCacheEnabled() || !Storage::DataBase::Instance().IsOpened()) return;
     const auto started = std::chrono::steady_clock::now();
     std::vector<u8> data;
     Storage::DataBase::Instance().Load(Storage::BlobType::DriverCache, "driver", data);
@@ -956,21 +957,25 @@ void PipelineCache::LoadDriverCache() {
                 driver_cache_size >> 10, ElapsedNs(started) / 1e6);
 }
 
-void PipelineCache::SaveDriverCache() {
+bool PipelineCache::SaveDriverCache() {
+    if (!EmulatorSettings.IsPipelineCacheEnabled() || !Storage::DataBase::Instance().IsOpened()) return false;
     const auto device = instance.GetDevice();
     size_t size = 0;
-    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) != vk::Result::eSuccess ||
-        size == driver_cache_size) {
-        return;
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) != vk::Result::eSuccess) {
+        return false;
     }
     std::vector<u8> data(size);
     if (device.getPipelineCacheData(*pipeline_cache, &size, data.data()) != vk::Result::eSuccess) {
-        return;
+        return false;
     }
     data.resize(size);
+    // Equal size does not imply equal contents: drivers may update fixed-size entries.
     driver_cache_size = size;
-    Storage::DataBase::Instance().Save(Storage::BlobType::DriverCache, "driver", std::move(data));
+    if (!Storage::DataBase::Instance().Save(Storage::BlobType::DriverCache, "driver", std::move(data))) {
+        return false;
+    }
     std::printf("Driver pipeline cache: %zu KiB saved\n", size >> 10);
+    return true;
 }
 
 #ifdef GOW3_UWP
@@ -1085,6 +1090,8 @@ void PipelineCache::WarmUp(const std::function<void(u32, u32)>& progress) {
 
 void PipelineCache::StartOnDemand() {
     CheckCacheProfile();
+    LoadDriverCache();
+    SeedWorkerCaches();
     Storage::DataBase::Instance().FinishPreload();
     std::printf("Pipeline startup: on demand, no bulk warm-up\n");
 }
@@ -1154,6 +1161,8 @@ bool PipelineCache::StartBackgroundWarmUp() {
     if (!CheckCacheProfile()) {
         return true; // nothing cached yet
     }
+    LoadDriverCache();
+    SeedWorkerCaches();
     background = new BackgroundWarmup;
     auto& warm = *background;
     warm.started = std::chrono::steady_clock::now();
@@ -1419,6 +1428,7 @@ void PipelineCache::PumpWarmUp() {
     warm.finished = true;
     SpartanOverlay::SetBackgroundLoading(0, 0);
     Storage::DataBase::Instance().FinishPreload();
+    SaveDriverCache();
 }
 
 void PipelineCache::StopWarmUp() {
@@ -1434,9 +1444,24 @@ void PipelineCache::StopWarmUp() {
     SpartanOverlay::SetBackgroundLoading(0, 0);
 }
 
+void PipelineCache::CheckpointDriverCache() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - driver_cache_checkpoint < std::chrono::seconds(30)) return;
+    driver_cache_checkpoint = now;
+    if (driver_cache_saved_pipelines == num_new_pipelines ||
+        !EmulatorSettings.IsPipelineCacheEnabled() || !Storage::DataBase::Instance().IsOpened()) return;
+    // Normal VkPipelineCache objects synchronize their accesses internally. Worker caches
+    // are not created with EXTERNALLY_SYNCHRONIZED; no compiler stop or GPU wait is needed.
+    std::vector<vk::PipelineCache> sources;
+    for (const auto& cache : worker_pipeline_caches) sources.push_back(*cache);
+    if (!sources.empty() && instance.GetDevice().mergePipelineCaches(*pipeline_cache, sources) != vk::Result::eSuccess) return;
+    if (SaveDriverCache()) driver_cache_saved_pipelines = num_new_pipelines;
+}
+
 void PipelineCache::Sync() {
     StopWarmUp();
     FinishCompilations();
+    SaveDriverCache();
     Storage::DataBase::Instance().Close();
 }
 

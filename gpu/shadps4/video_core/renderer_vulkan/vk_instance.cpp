@@ -25,6 +25,11 @@
 #include "descriptor_fallback.h"
 #endif
 
+namespace VideoCore {
+void ReportTextureMemoryStats();
+extern std::atomic<u64> direct_upload_bytes;
+}
+
 namespace Vulkan {
 
 namespace {
@@ -195,7 +200,7 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
 
-    CreateDevice();
+    CreateDevice(window_info.type != Frontend::WindowSystemType::Headless);
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
@@ -203,6 +208,25 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
 
 Instance::~Instance() {
     ImGui::Core::Shutdown(GetDevice());
+    const char* memory_stats = std::getenv("SPARTAN_GPU_MEMORY_STATS");
+    if (allocator && memory_stats && memory_stats[0] == '1') {
+        VideoCore::ReportTextureMemoryStats();
+        std::printf("GPU uploads bypassing staging: %llu MiB\n",
+            static_cast<unsigned long long>(VideoCore::direct_upload_bytes.load() >> 20));
+        VmaTotalStatistics statistics{};
+        vmaCalculateStatistics(allocator, &statistics);
+        const auto& total = statistics.total.statistics;
+        std::printf("GPU memory shutdown: %u live allocations, %llu bytes used, %u blocks, %llu bytes reserved\n",
+            total.allocationCount, static_cast<unsigned long long>(total.allocationBytes), total.blockCount,
+            static_cast<unsigned long long>(total.blockBytes));
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+        vmaGetHeapBudgets(allocator, budgets);
+        for (u32 i = 0; i < memory_properties.memoryHeapCount; ++i) {
+            std::printf("GPU heap %u: usage %llu MiB, budget %llu MiB\n", i,
+                static_cast<unsigned long long>(budgets[i].usage >> 20),
+                static_cast<unsigned long long>(budgets[i].budget >> 20));
+        }
+    }
     vmaDestroyAllocator(allocator);
 }
 
@@ -264,7 +288,7 @@ bool InitializePipelineBinaryCache(vk::Device device, bool supported,
     return true;
 }
 
-bool Instance::CreateDevice() {
+bool Instance::CreateDevice(bool with_surface) {
     const vk::StructureChain feature_chain = physical_device.getFeatures2<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
@@ -276,6 +300,7 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT, vk::PhysicalDeviceShaderClockFeaturesKHR,
         vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR,
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
+        vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDevicePipelineBinaryFeaturesKHR,
         vk::PhysicalDeviceMaintenance5FeaturesKHR,
         vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR>();
@@ -314,8 +339,10 @@ bool Instance::CreateDevice() {
 
     // Required
 #ifndef GOW3_UWP
-    ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (with_surface) {
+        ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
+                   "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
     ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
 #else
@@ -347,6 +374,11 @@ bool Instance::CreateDevice() {
 #endif
 
     // Optional
+    const char* libraries_env = std::getenv("SPARTAN_PIPELINE_LIBRARIES");
+    graphics_pipeline_library = !(libraries_env && libraries_env[0] == '0') &&
+        feature_chain.get<vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT>().graphicsPipelineLibrary &&
+        add_extension(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+        add_extension(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     pipeline_binaries = PipelineBinaryCacheRequested() && maintenance_5 &&
         feature_chain.get<vk::PhysicalDeviceMaintenance5FeaturesKHR>().maintenance5 &&
@@ -695,10 +727,16 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE{
             .shaderMixedFloatDotProductFloat16AccFloat32 = true,
         },
+        vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT{
+            .graphicsPipelineLibrary = graphics_pipeline_library,
+        },
         vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR{
             .pipelineExecutableInfo = pipeline_executable_features.pipelineExecutableInfo,
         },
     };
+    if (!graphics_pipeline_library) {
+        device_chain.unlink<vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT>();
+    }
     if (!pipeline_executable_properties) {
         device_chain.unlink<vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR>();
     }
@@ -835,17 +873,18 @@ void Instance::CreateAllocator() {
         .vkGetDeviceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr,
     };
 
-    const VmaAllocatorCreateInfo allocator_info = {
-        .flags =
-#ifdef GOW3_UWP
-            0,
-#else
-            VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+    VmaAllocatorCreateFlags flags = supports_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0;
+#ifndef GOW3_UWP
+    flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 #endif
+    const VmaAllocatorCreateInfo allocator_info = {
+        .flags = flags,
         .physicalDevice = physical_device,
         .device = *device,
 #ifdef GOW3_UWP
-        .preferredLargeHeapBlockSize = 16_MB,
+        .preferredLargeHeapBlockSize = 64_MB,
+#else
+        .preferredLargeHeapBlockSize = 128_MB,
 #endif
         .pVulkanFunctions = &functions,
         .instance = *instance,

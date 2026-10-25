@@ -111,6 +111,12 @@ DescriptorHeap::DescriptorHeap(const Instance& instance, Semaphore* work_semapho
 }
 
 DescriptorHeap::~DescriptorHeap() {
+    const char* stats = std::getenv("SPARTAN_GPU_MEMORY_STATS");
+    if (stats && stats[0] == '1') {
+        std::printf("GPU descriptor cache: %llu hits, %llu writes\n",
+            static_cast<unsigned long long>(cache_hits.load()),
+            static_cast<unsigned long long>(cache_misses.load()));
+    }
     device.destroyDescriptorPool(curr_pool);
     for (const auto [pool, tick] : pending_pools) {
         work_semaphore->Wait(tick);
@@ -120,6 +126,69 @@ DescriptorHeap::~DescriptorHeap() {
 
 vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout set_layout) {
     std::scoped_lock lock{mutex};
+    return CommitLocked(set_layout);
+}
+
+vk::DescriptorSet DescriptorHeap::CommitCached(vk::DescriptorSetLayout layout,
+                                              std::span<const vk::WriteDescriptorSet> writes, u64 recording_tick) {
+    std::scoped_lock lock{mutex};
+    if (!recording_tick) recording_tick = work_semaphore->CurrentTick();
+    if (cache_tick != recording_tick) {
+        cached_sets.clear(); // Avoid stale handles across resource lifetimes/submissions.
+        cache_tick = recording_tick;
+    }
+    key_scratch.clear();
+    key_scratch.push_back(std::bit_cast<u64>(layout));
+    bool cacheable = true;
+    for (const auto& write : writes) {
+        key_scratch.insert(key_scratch.end(), {write.dstBinding, write.dstArrayElement,
+            u64(write.descriptorType), write.descriptorCount});
+        if (write.pNext) { cacheable = false; break; }
+        for (u32 i = 0; i < write.descriptorCount; ++i) {
+            switch (write.descriptorType) {
+            case vk::DescriptorType::eStorageBuffer:
+            case vk::DescriptorType::eStorageBufferDynamic:
+            case vk::DescriptorType::eUniformBuffer:
+            case vk::DescriptorType::eUniformBufferDynamic: {
+                const auto& info = write.pBufferInfo[i];
+                key_scratch.insert(key_scratch.end(), {std::bit_cast<u64>(info.buffer), info.offset, info.range});
+                break;
+            }
+            case vk::DescriptorType::eSampler:
+            case vk::DescriptorType::eCombinedImageSampler:
+            case vk::DescriptorType::eSampledImage:
+            case vk::DescriptorType::eStorageImage: {
+                const auto& info = write.pImageInfo[i];
+                // Ignore fields not used by this descriptor type (they may be uninitialized).
+                key_scratch.push_back(write.descriptorType == vk::DescriptorType::eSampledImage ||
+                    write.descriptorType == vk::DescriptorType::eStorageImage ? 0 : std::bit_cast<u64>(info.sampler));
+                key_scratch.push_back(write.descriptorType == vk::DescriptorType::eSampler ? 0 : std::bit_cast<u64>(info.imageView));
+                key_scratch.push_back(write.descriptorType == vk::DescriptorType::eSampler ? 0 : u64(info.imageLayout));
+                break;
+            }
+            default: cacheable = false; break;
+            }
+        }
+    }
+    if (cacheable) {
+        if (const auto it = cached_sets.find(key_scratch); it != cached_sets.end()) {
+            ++cache_hits;
+            return it->second;
+        }
+    }
+    ++cache_misses;
+    const auto set = CommitLocked(layout);
+    std::vector<vk::WriteDescriptorSet> patched(writes.begin(), writes.end());
+    for (auto& write : patched) write.dstSet = set;
+    device.updateDescriptorSets(patched, {});
+    if (cacheable) {
+        if (cached_sets.size() >= 256) cached_sets.clear(); // Bound retained CPU memory.
+        cached_sets.emplace(key_scratch, set);
+    }
+    return set;
+}
+
+vk::DescriptorSet DescriptorHeap::CommitLocked(vk::DescriptorSetLayout set_layout) {
     const u64 set_key = std::bit_cast<u64>(set_layout);
     const auto [it, _] = descriptor_sets.try_emplace(set_key);
 
@@ -173,6 +242,7 @@ vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout set_layout) {
 
     // We've changed pool so also reset descriptor batch cache.
     descriptor_sets.clear();
+    cached_sets.clear();
     const auto desc_set = desc_sets.back();
     desc_sets.pop_back();
     descriptor_sets[set_key] = std::move(desc_sets);

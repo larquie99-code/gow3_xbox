@@ -1,4 +1,5 @@
 // spartanport.ini graphics keys (spartanport_settings.cpp, spartanport_graphics.h).
+#include "test_environment.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -59,24 +60,24 @@ int main() {
                "render_resolution=1440p\nengine_fps=240\ndeferred_readback=0\nstale_readback=1\n"
                "fsr1=1\nrcas=0\nrcas_strength=40\nframes_queued=2\n";
     }
-    _putenv_s("SPARTAN_CONFIG", path);
-    _putenv_s("SPARTAN_ASYNC_SHADERS", "");
+    SetTestEnvironment("SPARTAN_CONFIG", path);
+    SetTestEnvironment("SPARTAN_ASYNC_SHADERS", "");
     auto& v = SpartanSettings::Get();
     SpartanSettings::Load();
     assert(v.display_mode == G::Borderless && !v.vsync && v.fps_limit == 240 && !v.async_shaders);
     assert(v.render_resolution == 4 && v.engine_fps == 240 && !v.deferred_readback && v.stale_readback);
     // FSR 1 left the menus in 2.2.0: a saved fsr1=1 (or SPARTAN_FSR1) no longer turns it on.
     assert(!v.fsr1 && !v.rcas && v.rcas_strength == 40 && v.frames_queued == 2);
-    _putenv_s("SPARTAN_FSR1", "1");
+    SetTestEnvironment("SPARTAN_FSR1", "1");
     SpartanSettings::Load();
     assert(!v.fsr1);
-    _putenv_s("SPARTAN_FSR1", "");
+    SetTestEnvironment("SPARTAN_FSR1", "");
     assert(!SpartanSettings::GraphicsNeedRestart());
     assert(v.applied_engine_fps == 240);  // no SPARTAN_ENGINE_FPS: the configured rate
-    _putenv_s("SPARTAN_ENGINE_FPS", "60");    // run.py: the frame rate patch did not apply
+    SetTestEnvironment("SPARTAN_ENGINE_FPS", "60");    // run.py: the frame rate patch did not apply
     SpartanSettings::Load();
     assert(v.engine_fps == 240 && v.applied_engine_fps == 60 && !SpartanSettings::GraphicsNeedRestart());
-    _putenv_s("SPARTAN_ENGINE_FPS", "");
+    SetTestEnvironment("SPARTAN_ENGINE_FPS", "");
     v.render_resolution = 0;
     assert(SpartanSettings::GraphicsNeedRestart());
     v.render_resolution = 4;
@@ -106,7 +107,7 @@ int main() {
     {
         // The resolutions of the enabled mods' patch files (run.py: SPARTAN_EXTRA_RESOLUTIONS) follow the built-in
         // ones and keep their names through a load and a save; repeated or built-in names are not added twice.
-        _putenv_s("SPARTAN_EXTRA_RESOLUTIONS", "3840x1080;2880x1200;;2880x1200;4K;3440x1440");
+        SetTestEnvironment("SPARTAN_EXTRA_RESOLUTIONS", "3840x1080;2880x1200;;2880x1200;4K;3440x1440");
         const auto names = G::ResolutionNames();
         assert(names.size() == 25 && names[22] == "8K" && names[23] == "3840x1080" && names[24] == "2880x1200");
         {
@@ -117,7 +118,7 @@ int main() {
         assert(v.render_resolution == 24);
         SpartanSettings::Save();
         assert(Read(path).find("render_resolution=2880x1200\n") != std::string::npos);
-        _putenv_s("SPARTAN_EXTRA_RESOLUTIONS", "");  // the mod is off: its resolution is unknown, so native
+        SetTestEnvironment("SPARTAN_EXTRA_RESOLUTIONS", "");  // the mod is off: its resolution is unknown, so native
         SpartanSettings::Load();
         assert(v.render_resolution == 0 && G::ResolutionNames().size() == G::Resolutions.size());
     }
@@ -127,7 +128,7 @@ int main() {
         out << "display_mode=huge\nfps_limit=7\nrender_resolution=invalid\nengine_fps=1\n"
                "rcas_strength=250\nframes_queued=9\n";
     }
-    _putenv_s("SPARTAN_ASYNC_SHADERS", "1");  // the environment still wins at start
+    SetTestEnvironment("SPARTAN_ASYNC_SHADERS", "1");  // the environment still wins at start
     v.async_shaders = false;
     SpartanSettings::Load();
     assert(v.display_mode == G::Windowed && v.fps_limit == 0 && v.render_resolution == 0 && v.engine_fps == 120);

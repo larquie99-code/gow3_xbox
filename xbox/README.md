@@ -1,4 +1,4 @@
-# God of War 3 Launcher for Xbox
+# God of War III
 
 The Xbox app of this fork: God of War III Remastered on the Xbox Series X|S in Developer Mode,
 built on SpartanPort and Dozen ([CREDITS.md](CREDITS.md)). Installing it is described in the
@@ -486,6 +486,13 @@ The Series X reached corrected native-resolution gameplay at about 23 FPS and
 showed about 27 FPS and 4103 MiB in the same opening area. These are scene samples,
 not a controlled benchmark. The 720p frame capture confirms 1280x720 render targets.
 
+The stream-memory startup default is now `SPARTAN_STREAM_MEMORY=auto`, allowing
+the renderer to prefer compatible CPU-visible device-local memory on Xbox. An
+explicit `graphics-debug.txt` override, including `cached`, is preserved. This
+changes the former forced `cached` default and needs a same-scene console
+comparison; no frame-time improvement is assumed. See the
+[renderer optimization audit](../docs/vulkan-optimization-status.md).
+
 `graphics-profile.example.txt` contains the tested private graphics switches; copy
 it to the app's `LocalState/graphics-debug.txt`. The required linear-image readbacks
 are always enabled by the UWP launcher. Persistent pipeline caching stores compiled
@@ -493,9 +500,55 @@ work between launches; asynchronous compilation remains an optional comparison
 switch. `SPARTAN_UWP_METRICS=1` logs FPS, frame time, CPU, app RAM and GPU allocations
 every five seconds, including when the performance panel is hidden.
 
-The existing `user/graphics.cfg` accepts `vsync=0` for a comparison with unsynchronized
-presentation. Preserve other keys when changing it. Keep startup patch selection
+The in-app settings menu (**Image → Display → VSync**, opened with RS+LT)
+can toggle VSync while playing. The change takes effect on a following presentation
+without restarting and is saved to `user/graphics.cfg` when the menu closes.
+On requests DXGI `SyncInterval=1`; off requests `SyncInterval=0`. The log confirms
+the applied interval after a successful presentation (`CoreWindow VSync ... applied`).
+The Xbox compositor/TV and game FPS limits still apply: off does not guarantee
+tearing, VRR, higher FPS, or bypass GPU copy/fence synchronization. For a device
+comparison, toggle the option in the same scene, verify both applied log lines,
+and compare frame times and input response with the same TV refresh rate.
+`user/graphics.cfg` also accepts `vsync=0` or `vsync=1`; preserve its other keys
+when editing it manually. Keep startup patch selection
 in `graphics-debug.txt`; the UWP app does not support the desktop restart command.
+
+### Settings combinations and renderer controls
+
+Open settings with **RS+LT**. **Image → Display → VSync** controls the live DXGI
+presentation interval. **Performance → Configuration profiles** offers:
+
+| Profile | Resolution on next start | FPS limit | VSync | Queued frames |
+| --- | --- | --- | --- | --- |
+| Balanced | 900p | Up to the game's 60 FPS | On | 2 |
+| Lower latency | 720p | Up to the game's 60 FPS | Off | 1 |
+| Image quality | Native 1080p | Up to the game's 60 FPS | On | 2 |
+| 30 FPS limit | 720p | 30 | On | 2 |
+
+All profiles enable background shader compilation. They do not change readback,
+cache, memory or recording preferences. Resolution applies after closing and
+reopening the app; the profile's other changes apply while playing. Changing an
+individual profile control shows **Custom** unless it matches a built-in profile.
+These are combinations of settings, not measured performance guarantees.
+
+**Performance → Applied at the next start** now also includes:
+
+- **Pipeline disk cache:** `pipeline_cache=1` (default) / `0`; maps to
+  `SPARTAN_PIPELINE_CACHE`. Disabling persistence does not delete existing cache.
+- **Threaded command recording:** `threaded_recording=1` (default) / `0`; maps to
+  `SPARTAN_VK_RECORD_THREAD`. This selects the existing dedicated recorder, not
+  scene-wide parallel command-buffer generation.
+- **Upload memory:** `stream_memory=auto` (default), `cached`, `host`, or `device`;
+  maps to `SPARTAN_STREAM_MEMORY`. These are allocation preferences with compatible
+  memory/budget fallback; GPU-visible mode is not a guarantee of ReBAR hardware.
+
+Settings save in `user/graphics.cfg` when the menu closes. The next boot reads
+these preferences before renderer initialization. Explicit `graphics-debug.txt`
+variables take precedence; remove those overrides to use menu choices. The
+**Renderer settings at this start** section shows the preferences loaded for this
+session. The pending-change footer counts startup edits without treating them as
+already applied; close and reopen the app to apply them. No automatic cache
+clear, allocator disable or unsupported GPU feature switch is offered.
 
 Some Xbox OS versions reject or stall on the package stop endpoint.
 `xbox-stop.ps1` uses the process stop endpoint after checking each process still
@@ -626,7 +679,12 @@ keyboard fallback. This does not replace an in-game save/reload check on Xbox.
 ### Launcher shader preparation
 
 Normal boot now opens a controller/keyboard launcher before starting the game.
-Choose **Start game** or **Precompile shaders** using D-pad/arrow keys and A/Enter.
+Choose **Start game**, **Precompile shaders**, **Choose game folder**, or **Language**
+using D-pad/arrow keys and A/Enter. **Language** offers English, Português (Brasil),
+and Español. The launcher menu updates immediately and remembers the choice in
+`graphics.cfg` (`launcher_language=en`, `pt-BR`, or `es`). B/Esc or **Back** keeps
+the current language. This preference translates the launcher menu and preparation
+progress; native folder-picker messages and the game's own language are independent.
 Preparation displays scanning and compilation progress, then returns to the
 launcher with the prepared count. Unsupported shaders compile during gameplay.
 
@@ -643,3 +701,7 @@ file uses the existing compiler. Driver/pipeline compilation can still occur.
 Private `graphics-debug.txt` may set `SPARTAN_PRECOMPILE_AUTORUN=1` for a bounded
 launcher smoke test; the default requires selecting the action. Existing
 `SPARTAN_UWP_CAPTURE=1` also writes `user/uwp-launcher.bmp` for launcher/progress QA.
+
+## Baixar o pacote de testes
+
+Veja [TESTING.md](TESTING.md) para baixar os artefatos do workflow, instalar no Xbox e verificar VSync e os perfis de desempenho.

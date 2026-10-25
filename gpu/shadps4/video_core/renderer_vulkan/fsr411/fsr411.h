@@ -15,6 +15,7 @@
 #include <string>
 
 #include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 namespace Fsr411 {
 
@@ -43,7 +44,8 @@ struct Frame {
 class Upscaler {
 public:
     /// `dir`: the asset sets (t1080_m0 ... t2160_m1).
-    Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir);
+    /// The caller owns allocator and keeps it alive until the upscaler is destroyed.
+    Upscaler(VkPhysicalDevice physical, VkDevice device, VmaAllocator allocator, std::string dir);
     ~Upscaler();
 
     /// Records one upscale; false with Error() set when it cannot (assets, device, sizes).

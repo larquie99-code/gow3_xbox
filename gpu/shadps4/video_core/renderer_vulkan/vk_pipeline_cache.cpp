@@ -84,6 +84,7 @@ constexpr static auto SpirvVersion1_6 = 0x00010600U;
 
 constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 512},
+    vk::DescriptorPoolSize{vk::DescriptorType::eStorageBufferDynamic, 8192},
     vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
 #ifdef GOW3_UWP
                           16384},

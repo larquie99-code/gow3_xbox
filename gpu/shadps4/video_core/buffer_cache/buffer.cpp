@@ -13,6 +13,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #include <vk_mem_alloc.h>
+#include "video_core/renderer_vulkan/vk_memory_policy.h"
 
 namespace VideoCore {
 
@@ -37,23 +38,24 @@ std::string_view BufferTypeName(MemoryType type) {
 /// read-only buffers from guest memory into it on the Vulkan recording thread. "device"
 /// (shadPS4's choice) is VRAM written through the PCIe BAR: cheap with AMD Smart Access Memory
 /// on a desktop, but on a laptop NVIDIA GPU these writes took half of that thread's time and
-/// it limited the frame rate. "cached" (default) is cached system memory the GPU reads over
+/// it limited the frame rate. "cached" is cached system memory the GPU reads over
 /// PCIe instead; "host" is uncached system memory.
-enum class StreamPlacement { Device, Host, Cached };
+enum class StreamPlacement { Automatic, Device, Host, Cached };
 static StreamPlacement StreamMemory() {
     static const StreamPlacement placement = [] {
         const char* env = std::getenv("SPARTAN_STREAM_MEMORY");
-        const std::string_view value = env ? env : "cached";
+        const std::string_view value = env ? env : "auto";
         if (value == "device") {
             return StreamPlacement::Device;
         }
-        return value == "host" ? StreamPlacement::Host : StreamPlacement::Cached;
+        if (value == "host") return StreamPlacement::Host;
+        return value == "auto" ? StreamPlacement::Automatic : StreamPlacement::Cached;
     }();
     return placement;
 }
 
 [[nodiscard]] VkMemoryPropertyFlags MemoryUsagePreferredVmaFlags(MemoryType type) {
-    if (type == MemoryType::Stream && StreamMemory() == StreamPlacement::Cached) {
+    if (type == MemoryType::Stream && (StreamMemory() == StreamPlacement::Cached || StreamMemory() == StreamPlacement::Automatic)) {
         return VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     }
     return type != MemoryType::DeviceLocal ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -61,7 +63,7 @@ static StreamPlacement StreamMemory() {
 }
 
 [[nodiscard]] VmaAllocationCreateFlags MemoryUsageVmaFlags(MemoryType type) {
-    if (type == MemoryType::Stream && StreamMemory() == StreamPlacement::Cached) {
+    if (type == MemoryType::Stream && (StreamMemory() == StreamPlacement::Cached || StreamMemory() == StreamPlacement::Automatic)) {
         return VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
     }
     switch (type) {
@@ -118,14 +120,28 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
 #endif
     const bool with_bda = bool(buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
     if (mem_type != MemoryType::Sparse) {
-        const VmaAllocationCreateFlags bda_flag =
-            with_bda ? VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT : 0;
+        // The allocator enables device addresses for its blocks; BDA buffers can suballocate too.
+        const VkPhysicalDeviceProperties* properties{};
+        const VkPhysicalDeviceMemoryProperties* memory_properties{};
+        vmaGetPhysicalDeviceProperties(allocator, &properties);
+        vmaGetMemoryProperties(allocator, &memory_properties);
+        const bool unified = Vulkan::HasUnifiedUploadMemory(*properties, *memory_properties);
+        auto flags = MemoryUsageVmaFlags(mem_type);
+        auto preferred = MemoryUsagePreferredVmaFlags(mem_type);
+        if (unified && mem_type == MemoryType::DeviceLocal) {
+            flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                     VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                     VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+        }
+        if (unified && mem_type == MemoryType::Stream && StreamMemory() == StreamPlacement::Automatic) {
+            preferred |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
         const VmaAllocationCreateInfo alloc_ci = {
             .flags =
-                VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | bda_flag | MemoryUsageVmaFlags(mem_type),
+                VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | flags,
             .usage = MemoryUsageVma(mem_type),
             .requiredFlags = 0,
-            .preferredFlags = MemoryUsagePreferredVmaFlags(mem_type),
+            .preferredFlags = preferred,
             .pool = VK_NULL_HANDLE,
             .pUserData = nullptr,
         };
